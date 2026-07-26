@@ -432,7 +432,6 @@ function renderFrame(dt){
 // ---------- MAIN LOOP ----------
 let lastTs = performance.now();
 let raceStart = performance.now();
-let paused = false;
 function mainLoop(ts){
   const dt = Math.min(0.05, (ts - lastTs) / 1000);
   lastTs = ts;

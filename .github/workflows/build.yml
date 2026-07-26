@@ -1,0 +1,25 @@
+  - name: Use Node.js
+    uses: actions/setup-node@v4
+    with:
+      node-version: '18'
+
+  - name: Install dependencies
+    run: |
+      npm ci
+
+  - name: Build (electron-builder)
+    run: |
+      npm run dist
+    env:
+      CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  - name: List dist folder
+    run: |
+      ls -la dist || true
+
+  - name: Upload dist artifacts
+    uses: actions/upload-artifact@v4
+    with:
+      name: shaura-game-dist-${{ matrix.os }}
+      path: dist/**
