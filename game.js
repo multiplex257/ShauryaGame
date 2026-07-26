@@ -1,9 +1,10 @@
 // game.js — 20km highway racer with smooth lane changes, sportier engine, 4 cars, restart, finish ranking
-// Replace your existing game.js with this full file.
+// Clean fixed version: keys declared once, raceStart declared once.
 
 const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d');
 const W = canvas.width, H = canvas.height;
+const keys = Object.create(null);
 
 // ---------- CONFIG ----------
 const LANES = 4;
@@ -110,7 +111,16 @@ function playCrashSound(){
 // ---------- UTIL ----------
 function clamp(v,a,b){ return Math.max(a, Math.min(b, v)); }
 function laneCenter(i){ return ROAD_X + i * LANE_W + LANE_W/2; }
-function now(){ return performance.now(); }
+
+// ---------- INPUT ----------
+window.addEventListener('keydown', (e)=>{
+  keys[e.key] = true;
+  if(['ArrowUp','ArrowDown','ArrowLeft','ArrowRight',' '].includes(e.key)) e.preventDefault();
+  if(!audioCtx) ensureAudio();
+});
+window.addEventListener('keyup', (e)=>{
+  keys[e.key] = false;
+});
 
 // ---------- CAR SPRITES ----------
 function carSpriteDataURL(color, stripe){
@@ -133,7 +143,7 @@ function carSpriteDataURL(color, stripe){
 // ---------- CARS SETUP ----------
 const carColors = ['#ffb74d','#58a0ff','#7ee1a8','#ff6b6b'];
 const cars = [];
-const playerInitialLane = 1; // player starts in lane 1 for comfort
+const playerInitialLane = 1;
 for(let i=0;i<LANES;i++){
   const isPlayer = (i === playerInitialLane);
   const sprite = new Image();
@@ -142,7 +152,7 @@ for(let i=0;i<LANES;i++){
     id: i,
     lane: i,
     targetLane: i,
-    lanePos: i,       // float animated lane position
+    lanePos: i,
     x: laneCenter(i),
     y: H/2 + (i - 1.5) * 18,
     sprite,
@@ -158,7 +168,6 @@ for(let i=0;i<LANES;i++){
   };
   cars.push(c);
   if(isPlayer && i !== 0){
-    // swap so player is index 0 (convenience)
     const tmp = cars[0]; cars[0] = c; cars[i] = tmp;
     cars[0].id = 0; cars[i].id = i;
   }
@@ -166,7 +175,8 @@ for(let i=0;i<LANES;i++){
 
 // ---------- OBSTACLES ----------
 const obstacles = [];
-(function generateObstacles(){
+function regenerateObstacles(){
+  obstacles.length = 0;
   let pos = OBSTACLE_SAFE_START;
   while(pos < TRACK_LENGTH - 200 && obstacles.length < MAX_OBSTACLES){
     const gap = OBSTACLE_GAP_MIN + Math.random() * (OBSTACLE_GAP_MAX - OBSTACLE_GAP_MIN);
@@ -174,7 +184,8 @@ const obstacles = [];
     const lane = Math.floor(Math.random() * LANES);
     obstacles.push({ lane, distance: Math.round(pos) });
   }
-})();
+}
+regenerateObstacles();
 
 // ---------- PARTICLES ----------
 const particles = [];
@@ -204,7 +215,7 @@ function updateParticles(dt){
   }
 }
 
-// ---------- DRAW STATIC SIDES & ROAD ----------
+// ---------- DRAW ----------
 function drawStaticSides(){
   ctx.fillStyle = '#7fbf6b';
   ctx.fillRect(0,0,ROAD_X, H);
@@ -257,28 +268,21 @@ function drawObstaclesFor(playerDistance){
     ctx.strokeRect(sx - OBSTACLE_WIDTH/2, sy - OBSTACLE_HEIGHT/2, OBSTACLE_WIDTH, OBSTACLE_HEIGHT);
   }
 }
-
-// ---------- DRAW CARS & PARTICLES ----------
 function drawCarsAndParticles(playerDistance, dt){
   for(const c of cars){
     const sy = H/2 - (c.distance - playerDistance) * PIXELS_PER_METER;
-    // smooth lanePos toward targetLane
     c.lanePos += (c.targetLane - c.lanePos) * clamp(LANE_CHANGE_SPEED * dt, 0, 1);
-    // keep integer lane updated for logic when close
     const rounded = Math.round(c.lanePos);
     if(Math.abs(c.lanePos - rounded) < 0.05) c.lane = rounded;
 
-    // smooth x
     const targetX = laneCenter(c.lanePos);
     c.x += (targetX - c.x) * clamp(12 * dt, 0, 1);
 
-    // shadow
     ctx.save(); ctx.globalAlpha = 0.18;
     ctx.fillStyle = '#000';
     ctx.beginPath(); ctx.ellipse(c.x, sy + c.height*0.26, c.width*0.48, c.width*0.22, 0, 0, Math.PI*2); ctx.fill();
     ctx.restore();
 
-    // sprite
     if(c.sprite && c.sprite.complete) ctx.drawImage(c.sprite, c.x - c.width/2, sy - c.height/2, c.width, c.height);
     else { ctx.fillStyle = '#777'; ctx.fillRect(c.x - c.width/2, sy - c.height/2, c.width, c.height); }
 
@@ -295,8 +299,9 @@ function drawCarsAndParticles(playerDistance, dt){
 let finishOrder = [];
 let raceStart = performance.now();
 let paused = false;
-function drawHUD(playerDistance){
-  ctx.save(); ctx.resetTransform();
+
+function drawHUD(){
+  ctx.save();
   ctx.fillStyle = 'rgba(255,255,255,0.94)';
   ctx.fillRect(10,10,340,100);
   ctx.strokeStyle = '#123'; ctx.strokeRect(10,10,340,100);
@@ -324,7 +329,7 @@ function drawHUD(playerDistance){
   ctx.restore();
 }
 function drawFinishOverlay(){
-  ctx.save(); ctx.resetTransform();
+  ctx.save();
   ctx.fillStyle = 'rgba(0,0,0,0.55)'; ctx.fillRect(0,0,W,H);
   ctx.fillStyle = '#fff'; ctx.font = '24px sans-serif'; ctx.fillText('Race Results', W/2 - 80, 80);
   ctx.font = '18px monospace';
@@ -340,12 +345,9 @@ function drawFinishOverlay(){
   ctx.restore();
 }
 
-// ---------- FRAME UPDATE ----------
-let last = performance.now();
 function updateFrame(dt){
   const player = cars[0];
 
-  // Player input -> update targetLane or speed
   if((keys['ArrowLeft'] || keys['a']) && player.targetLane > 0){
     player.targetLane = Math.max(0, player.targetLane - 1); keys['ArrowLeft'] = false; keys['a'] = false;
   }
@@ -361,11 +363,8 @@ function updateFrame(dt){
     player.speed = clamp(player.speed - 0.06 * dt * 60, PLAYER_MIN_SPEED, PLAYER_MAX_SPEED);
   }
 
-  // Update cars (AI & player)
   for(const c of cars){
     if(c.finished) continue;
-
-    // AI behavior
     if(!c.isPlayer){
       const lookAhead = 140 + Math.random()*40;
       const obstacleAhead = obstacles.find(o => Math.round(c.lanePos) === o.lane && o.distance > c.distance && o.distance - c.distance < lookAhead);
@@ -377,14 +376,12 @@ function updateFrame(dt){
         if(safe !== undefined && Math.random() < AI_LANE_CHANGE_PROB) c.targetLane = safe;
         else c.speed = Math.max(PLAYER_MIN_SPEED, c.speed - 0.9);
       }
-      // approach target speed
       const target = c.maxSpeed - 1.0 + (Math.random() - 0.5);
       if(c.speed < target) c.speed += c.accel * dt * 25;
       else c.speed -= c.accel * dt * 10;
       c.speed = clamp(c.speed, PLAYER_MIN_SPEED, c.maxSpeed);
     }
 
-    // advance distance
     c.distance += c.speed * dt * 40;
     if(c.distance >= TRACK_LENGTH && !c.finished){
       c.finished = true;
@@ -393,7 +390,6 @@ function updateFrame(dt){
     }
   }
 
-  // collisions with obstacles
   for(const o of obstacles){
     for(const c of cars){
       if(c.finished) continue;
@@ -403,35 +399,30 @@ function updateFrame(dt){
         c.speed = Math.max(PLAYER_MIN_SPEED, c.speed * 0.72);
         spawnParticles(laneCenter(o.lane) + (Math.random()-0.5)*24, H/2 - (o.distance - cars[0].distance) * PIXELS_PER_METER + (Math.random()-0.5)*18, 12);
         if(c.isPlayer) playCrashSound();
-        o.distance += 6; // bump obstacle so not repeatedly triggered
+        o.distance += 6;
       }
     }
   }
 
-  // engine sound update (player)
   if(audioCtx) updateEngineSound(player.speed);
 
-  // finish check
   if(finishOrder.length === cars.length && !paused){
     finishOrder.sort((a,b) => a.time - b.time);
     paused = true;
   }
 }
 
-// ---------- RENDER ----------
 function renderFrame(dt){
   ctx.clearRect(0,0,W,H);
   drawStaticSides();
   drawRoad(cars[0].distance);
   drawObstaclesFor(cars[0].distance);
   drawCarsAndParticles(cars[0].distance, dt);
-  drawHUD(cars[0].distance);
+  drawHUD();
   if(paused && finishOrder.length === cars.length) drawFinishOverlay();
 }
 
-// ---------- MAIN LOOP ----------
 let lastTs = performance.now();
-let raceStart = performance.now();
 function mainLoop(ts){
   const dt = Math.min(0.05, (ts - lastTs) / 1000);
   lastTs = ts;
@@ -440,7 +431,7 @@ function mainLoop(ts){
   requestAnimationFrame(mainLoop);
 }
 
-// ---------- UI: Restart & Fullscreen & Touch wiring ----------
+// ---------- UI ----------
 document.getElementById('restart').addEventListener('click', ()=>{
   cars.forEach((c,i)=>{
     c.distance = 0;
@@ -448,23 +439,14 @@ document.getElementById('restart').addEventListener('click', ()=>{
     c.speed = c.isPlayer ? PLAYER_START_SPEED : (AI_BASE_SPEED + (Math.random()*AI_VARIATION - AI_VARIATION/2));
     c.lane = i; c.targetLane = i; c.lanePos = i; c.x = laneCenter(i);
   });
-  obstacles.length = 0;
-  (function gen(){
-    let pos = OBSTACLE_SAFE_START;
-    while(pos < TRACK_LENGTH - 200 && obstacles.length < MAX_OBSTACLES){
-      const gap = OBSTACLE_GAP_MIN + Math.random() * (OBSTACLE_GAP_MAX - OBSTACLE_GAP_MIN);
-      pos += gap;
-      const lane = Math.floor(Math.random()*LANES);
-      obstacles.push({ lane, distance: Math.round(pos) });
-    }
-  })();
+  regenerateObstacles();
   finishOrder = [];
   paused = false;
   raceStart = performance.now();
   lastTs = performance.now();
   if(!audioCtx) ensureAudio();
-  requestAnimationFrame(mainLoop);
 });
+
 document.getElementById('playfull').addEventListener('click', ()=>{ if(canvas.requestFullscreen) canvas.requestFullscreen(); });
 
 const tc = document.getElementById('touchControls');
@@ -501,7 +483,6 @@ if(tc){
   });
 }
 
-// resume audio on first gesture
 function resumeAudioOnGesture(){
   if(!audioCtx) return;
   if(audioCtx.state === 'suspended'){
@@ -513,7 +494,6 @@ function resumeAudioOnGesture(){
 window.addEventListener('pointerdown', ()=>{ if(!audioCtx) ensureAudio(); resumeAudioOnGesture(); }, {once:true});
 window.addEventListener('touchstart', ()=>{ if(!audioCtx) ensureAudio(); resumeAudioOnGesture(); }, {once:true});
 
-// ---------- START ----------
-lastTs = performance.now();
 raceStart = performance.now();
+lastTs = performance.now();
 requestAnimationFrame(mainLoop);
