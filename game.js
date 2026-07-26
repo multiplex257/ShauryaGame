@@ -1,61 +1,96 @@
-// Straight-highway racer: lane-based vertical scroller (pixel-ish style)
-// Replace your existing game.js with this file.
+// highway-highway-v4: static footpath, 4 lanes, up/down accelerate, crash sound (doesn't stop game)
+// Replace entire game.js with this file.
 
 const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d');
 const W = canvas.width, H = canvas.height;
 
-// Configuration
-const lanes = 3;                       // number of lanes
-const roadWidth = Math.floor(W * 0.55);
-const laneWidth = Math.floor(roadWidth / lanes);
-const roadX = Math.floor((W - roadWidth)/2);
-const borderWidth = 14;
-const grassColor = '#6cc070';
+// Road configuration
+const LANES = 4;
+const ROAD_WIDTH = Math.floor(W * 0.60);
+const LANE_WIDTH = Math.floor(ROAD_WIDTH / LANES);
+const ROAD_X = Math.floor((W - ROAD_WIDTH) / 2);
+const BORDER_W = 14;
 
 // Player
 const player = {
-  lane: Math.floor(lanes/2),           // current lane index 0..lanes-1
-  x: 0,                                // computed from lane
-  y: H - 140,                          // fixed vertical position
-  targetX: 0,                          // for smooth lane transitions
-  width: laneWidth * 0.6,             // sprite draw size
-  height: Math.floor(laneWidth * 0.9),
-  speed: 6,                            // base forward speed (affects scroll)
-  accel: 0.6,
-  maxSpeed: 18,
-  minSpeed: 3,
-  color: '#ffb74d',                    // player car color
+  lane: Math.floor(LANES / 2),
+  x: 0,
+  y: H - 140,
+  width: Math.floor(LANE_WIDTH * 0.68),
+  height: Math.floor(LANE_WIDTH * 0.98),
+  speed: 6,           // current speed (affects how fast the world seems to move)
+  accel: 0.7,
+  maxSpeed: 14,
+  minSpeed: 2,
+  color: '#ffb74d',
   alive: true
 };
 
-// Road scrolling
-let scroll = 0;
-let gameStart = null;
-let elapsed = 0;
-let score = 0;
-let running = true;
+// Static decorations (footpath / grass) — deterministic dots so they do NOT flicker
+const grassLeft = [];
+const grassRight = [];
+(function seedGrass(){
+  // create static pattern positions
+  for(let i=0;i<120;i++){
+    grassLeft.push({
+      x: 12 + (i % 8) * 18 + ((i*7) % 6),
+      y: 20 + Math.floor(i/8) * 18 + ((i*11) % 9)
+    });
+    grassRight.push({
+      x: ROAD_X + ROAD_WIDTH + 20 + ((i*5) % 40),
+      y: 12 + i*22 % (H - 40)
+    });
+  }
+})();
 
 // Enemies
 const enemies = [];
-const enemySpawnInterval = 900; // ms
-let lastEnemySpawn = 0;
+let lastSpawn = 0;
+const SPAWN_INTERVAL = 1100; // ms (easy)
 
-// Effects
+// Particles for crash effects
 const particles = [];
+
+// Scroll offset used for center dashes (visual motion)
+let scroll = 0;
 
 // Input
 let keys = {};
 
-// Audio
-let audioCtx = null;
-let engineGain = null;
-let engineOsc = null;
+// Audio (WebAudio small engine + crash)
+let audioCtx = null, engineOsc = null, engineGain = null;
+function ensureAudio(){
+  if(audioCtx) return;
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  engineOsc = audioCtx.createOscillator(); engineOsc.type='sawtooth';
+  engineGain = audioCtx.createGain(); engineGain.gain.value = 0;
+  engineOsc.connect(engineGain); engineGain.connect(audioCtx.destination);
+  engineOsc.frequency.value = 80; engineOsc.start();
+}
+function updateEngineSound(){
+  if(!audioCtx) return;
+  const freq = 100 + (player.speed / player.maxSpeed) * 700;
+  engineOsc.frequency.setTargetAtTime(freq, audioCtx.currentTime, 0.06);
+  const g = Math.min(0.2, 0.02 + (player.speed / player.maxSpeed) * 0.18);
+  engineGain.gain.setTargetAtTime(g, audioCtx.currentTime, 0.06);
+}
+function playCrash(){
+  if(!audioCtx) ensureAudio();
+  const t = audioCtx.currentTime;
+  const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+  o.type='square'; o.frequency.setValueAtTime(220, t);
+  g.gain.setValueAtTime(0.45, t);
+  o.connect(g); g.connect(audioCtx.destination);
+  o.start();
+  o.frequency.exponentialRampToValueAtTime(40, t + 0.45);
+  g.gain.exponentialRampToValueAtTime(0.001, t + 0.6);
+  setTimeout(()=>{ try{ o.stop(); o.disconnect(); g.disconnect(); }catch(e){} }, 750);
+}
 
-// Create simple pixel-ish car SVG as data URI
-function createCarSVG(color, stripe) {
-  const svg = `
-  <svg xmlns='http://www.w3.org/2000/svg' width='64' height='112' viewBox='0 0 64 112'>
+// Small car sprite generator (inline SVG)
+function carDataURL(color, stripe){
+  const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='64' height='112' viewBox='0 0 64 112'>
     <rect width='64' height='112' rx='8' ry='8' fill='${color}' stroke='#222' stroke-width='2'/>
     <rect x='12' y='12' width='40' height='28' rx='4' fill='#fff' opacity='0.9'/>
     <rect x='18' y='46' width='10' height='44' rx='3' fill='#111'/>
@@ -64,103 +99,22 @@ function createCarSVG(color, stripe) {
   </svg>`;
   return 'data:image/svg+xml;utf8,' + encodeURIComponent(svg);
 }
+const playerImg = new Image(); playerImg.src = carDataURL(player.color, '#ddb37b');
 
-const playerImg = new Image();
-playerImg.src = createCarSVG(player.color, '#ddb37b');
-
-function enemyImgForColor(c){
-  const img = new Image();
-  img.src = createCarSVG(c, '');
-  return img;
-}
-
-// Utility helpers
-function laneCenter(l){
-  return roadX + laneWidth * l + laneWidth/2;
-}
-function clamp(v,a,b){ return Math.max(a, Math.min(b, v)); }
-function now(){ return performance.now(); }
-
-// Init positions
+// helpers
+function laneCenter(l){ return ROAD_X + l*LANE_WIDTH + LANE_WIDTH/2; }
 player.x = laneCenter(player.lane);
-player.targetX = player.x;
 
-// Audio setup (small engine hum)
-function ensureAudio(){
-  if(audioCtx) return;
-  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-  engineOsc = audioCtx.createOscillator();
-  engineOsc.type = 'sawtooth';
-  engineGain = audioCtx.createGain();
-  engineGain.gain.value = 0;
-  engineOsc.connect(engineGain);
-  engineGain.connect(audioCtx.destination);
-  engineOsc.frequency.value = 80;
-  engineOsc.start();
-}
-
-function updateEngineSound(){
-  if(!audioCtx) return;
-  const s = player.speed;
-  const freq = 100 + (s / player.maxSpeed) * 700;
-  engineOsc.frequency.setTargetAtTime(freq, audioCtx.currentTime, 0.05);
-  const g = Math.min(0.18, 0.02 + (s / player.maxSpeed) * 0.16);
-  engineGain.gain.setTargetAtTime(g, audioCtx.currentTime, 0.05);
-}
-
-function playCrashSound(){
-  if(!audioCtx) ensureAudio();
-  const t = audioCtx.currentTime;
-  const o = audioCtx.createOscillator(), g = audioCtx.createGain();
-  o.type='square'; o.frequency.setValueAtTime(180, t);
-  g.gain.setValueAtTime(0.4, t);
-  o.connect(g); g.connect(audioCtx.destination);
-  o.start(); o.frequency.exponentialRampToValueAtTime(20, t+0.45);
-  g.gain.exponentialRampToValueAtTime(0.001, t+0.5);
-  setTimeout(()=>{ o.stop(); o.disconnect(); g.disconnect(); }, 700);
-}
-
-// Spawn an enemy car in a lane, with small color variety, and speed relative to player
-function spawnEnemy(){
-  const lane = Math.floor(Math.random()*lanes);
-  const x = laneCenter(lane);
-  // spawn just above screen
-  const y = -60 - Math.random()*120;
-  const colorSet = ['#58a0ff','#7ee1a8','#ff6b6b','#ffd54f','#9c27b0'];
-  const col = colorSet[Math.floor(Math.random()*colorSet.length)];
-  const img = enemyImgForColor(col);
-  const speed = clamp(player.speed - 4 + Math.random()*8, 2, player.maxSpeed+2); // relative
-  enemies.push({lane, x, y, width: player.width*0.95, height: player.height*0.95, img, speed});
-}
-
-// Collisions AABB
-function aabb(a,b){
-  return !(a.x + a.width < b.x || a.x > b.x + b.width || a.y + a.height < b.y || a.y > b.y + b.height);
-}
-
-// Particles for small crash effect
-function spawnParticles(x,y, count=8){
-  for(let i=0;i<count;i++){
-    particles.push({
-      x, y,
-      vx: (Math.random()-0.5)*6,
-      vy: (Math.random()-0.5)*6,
-      life: 600 + Math.random()*600,
-      born: now(),
-      size: 4 + Math.random()*5,
-      color: 'rgba(40,40,40,0.9)'
-    });
-  }
-}
-
-// Input wiring (keyboard)
+// input wiring (keyboard)
 window.addEventListener('keydown', e => {
   keys[e.key] = true;
   if(!audioCtx) ensureAudio();
 });
-window.addEventListener('keyup', e => keys[e.key] = false);
+window.addEventListener('keyup', e => {
+  keys[e.key] = false;
+});
 
-// Touch controls: reuse existing touch buttons which have data-key
+// touch controls wired to on-screen buttons (re-uses data-key)
 const tc = document.getElementById('touchControls');
 if(tc){
   tc.addEventListener('touchstart', e=>{
@@ -169,8 +123,7 @@ if(tc){
       const el = document.elementFromPoint(t.clientX, t.clientY);
       if(!el) continue;
       const k = el.dataset && el.dataset.key;
-      if(k) keys[k] = true;
-      if(!audioCtx) ensureAudio();
+      if(k){ keys[k] = true; if(!audioCtx) ensureAudio(); }
     }
   }, {passive:false});
   tc.addEventListener('touchend', e=>{
@@ -185,255 +138,244 @@ if(tc){
   tc.addEventListener('mousedown', e=>{
     const el = e.target.closest('.tc-btn');
     if(!el) return;
-    const k = el.dataset && el.dataset.key;
-    if(k){ keys[k] = true; if(!audioCtx) ensureAudio(); }
+    const k = el.dataset && el.dataset.key; if(k){ keys[k] = true; if(!audioCtx) ensureAudio(); }
   });
   tc.addEventListener('mouseup', e=>{
-    const el = e.target.closest('.tc-btn');
-    if(!el) return;
-    const k = el.dataset && el.dataset.key;
-    if(k) keys[k] = false;
+    const el = e.target.closest('.tc-btn'); if(!el) return;
+    const k = el.dataset && el.dataset.key; if(k) keys[k] = false;
   });
 }
 
-// Draw background: grass + roadside trees in pixel-ish dots
-function drawBackground(){
-  // grass
-  ctx.fillStyle = grassColor;
-  ctx.fillRect(0,0,W,H);
+// Spawn enemy (easy parameters)
+function spawnEnemy(){
+  const lane = Math.floor(Math.random() * LANES);
+  const x = laneCenter(lane);
+  const y = -80 - Math.random()*120;
+  const colors = ['#58a0ff','#7ee1a8','#ff6b6b','#ffd54f','#9c27b0'];
+  const color = colors[Math.floor(Math.random()*colors.length)];
+  const img = new Image(); img.src = carDataURL(color, '');
+  const speed = 2 + Math.random()*2; // base slow speed
+  enemies.push({ lane, x, y, width: player.width*0.92, height: player.height*0.92, img, speed });
+}
 
-  // grass dot pattern left and right
-  const margin = 12;
-  const treeDot = '#4c8b3a';
-  for(let x=margin; x<roadX-8; x+=18){
-    for(let y=20; y<H; y+=18){
-      ctx.fillStyle = Math.random()>0.7 ? treeDot : '#68b76a';
-      ctx.fillRect(x, y + (x%36 === 0 ? 6 : 0), 4, 4);
-    }
-  }
-  for(let x=roadX + roadWidth + 8; x<W-margin; x+=18){
-    for(let y=40; y<H; y+=18){
-      ctx.fillStyle = Math.random()>0.7 ? treeDot : '#68b76a';
-      ctx.fillRect(x, y + (x%30 === 0 ? 4 : 0), 4, 4);
-    }
-  }
+// AABB
+function aabb(a,b){
+  return !(a.x + a.width < b.x || a.x > b.x + b.width || a.y + a.height < b.y || a.y > b.y + b.height);
+}
 
-  // simple trees (circles) — spaced
-  ctx.fillStyle = '#145f2d';
-  for(let t=0;t<8;t++){
-    const tx = Math.random() < 0.5 ? (Math.random()*(roadX-60)) : (roadX + roadWidth + 20 + Math.random()*(W - (roadX+roadWidth+40)));
-    const ty = 40 + (t * 70);
-    ctx.beginPath();
-    ctx.arc(tx, (ty + (scroll%80)), 14, 0, Math.PI*2);
-    ctx.fill();
+// Particles
+function spawnParticles(x,y,count=10){
+  for(let i=0;i<count;i++){
+    particles.push({
+      x, y,
+      vx: (Math.random()-0.5) * 6,
+      vy: (Math.random()-0.5) * 6,
+      born: performance.now(),
+      life: 500 + Math.random()*700,
+      size: 3 + Math.random()*6,
+      color: 'rgba(40,40,40,0.9)'
+    });
   }
 }
 
-// Draw road, lane markings and side borders
+function updateParticles(dt){
+  const t = performance.now();
+  for(let i=particles.length-1;i>=0;i--){
+    const p = particles[i];
+    const age = t - p.born;
+    if(age > p.life){ particles.splice(i,1); continue; }
+    p.x += p.vx * dt * 60;
+    p.y += p.vy * dt * 60;
+    const alpha = 1 - age / p.life;
+    ctx.fillStyle = `rgba(60,60,60,${alpha})`;
+    ctx.beginPath(); ctx.arc(p.x, p.y, p.size * alpha, 0, Math.PI*2); ctx.fill();
+  }
+}
+
+// Draw static footpath (grass) — NO scroll
+function drawStaticFootpath(){
+  // left
+  ctx.fillStyle = '#6cc070';
+  ctx.fillRect(0,0,ROAD_X, H);
+  // right
+  ctx.fillStyle = '#6cc070';
+  ctx.fillRect(ROAD_X + ROAD_WIDTH, 0, W - (ROAD_X + ROAD_WIDTH), H);
+
+  // static dot pattern left
+  for(const d of grassLeft){
+    ctx.fillStyle = Math.random() > 0.82 ? '#145f2d' : '#4caf50';
+    ctx.fillRect(d.x, d.y, 5, 5);
+  }
+  // static small circles (trees) right (deterministic-ish)
+  for(let i=0;i<10;i++){
+    const tx = ROAD_X + ROAD_WIDTH + 30 + (i%3)*32;
+    const ty = 40 + i*70;
+    ctx.fillStyle = '#1b7436';
+    ctx.beginPath(); ctx.arc(tx, ty, 10, 0, Math.PI*2); ctx.fill();
+  }
+
+  // side border stripes (static) — vertical repeated red/white
+  for(let y=0; y<H; y+=28){
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(ROAD_X - BORDER_W, y, BORDER_W, 14);
+    ctx.fillStyle = '#c62828';
+    ctx.fillRect(ROAD_X - BORDER_W, y+14, BORDER_W, 14);
+
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(ROAD_X + ROAD_WIDTH, y, BORDER_W, 14);
+    ctx.fillStyle = '#c62828';
+    ctx.fillRect(ROAD_X + ROAD_WIDTH, y+14, BORDER_W, 14);
+  }
+}
+
+// Draw road & moving center dashed lines (dashes move based on scroll)
 function drawRoad(){
   // road base
   ctx.fillStyle = '#565a60';
-  ctx.fillRect(roadX, 0, roadWidth, H);
+  ctx.fillRect(ROAD_X, 0, ROAD_WIDTH, H);
 
-  // side borders (red / white stripes)
-  for(let y=0; y<H; y+=28){
-    ctx.fillStyle = '#fff';
-    ctx.fillRect(roadX - borderWidth, y + (scroll%56), borderWidth, 14);
-    ctx.fillStyle = '#c62828';
-    ctx.fillRect(roadX - borderWidth, y + 14 + (scroll%56), borderWidth, 14);
-
-    ctx.fillStyle = '#fff';
-    ctx.fillRect(roadX + roadWidth, y + (scroll%56), borderWidth, 14);
-    ctx.fillStyle = '#c62828';
-    ctx.fillRect(roadX + roadWidth, y + 14 + (scroll%56), borderWidth, 14);
-  }
-
-  // lane divider dashed lines (vertical moving)
-  ctx.strokeStyle = '#e9e9e9';
+  // lane divider dashed lines (moving)
+  ctx.strokeStyle = '#eaeaea';
   ctx.lineWidth = 6;
   ctx.setLineDash([28, 18]);
-  for(let i=1;i<lanes;i++){
-    const lx = roadX + i*laneWidth;
-    ctx.beginPath();
-    ctx.moveTo(lx, -1000);
-    ctx.lineTo(lx, H + 1000);
-    ctx.stroke();
+  // offset based on scroll so dashes move
+  ctx.lineDashOffset = -(scroll % 46);
+  for(let i=1;i<LANES;i++){
+    const lx = ROAD_X + i * LANE_WIDTH;
+    ctx.beginPath(); ctx.moveTo(lx, -1000); ctx.lineTo(lx, H+1000); ctx.stroke();
   }
   ctx.setLineDash([]);
+  ctx.lineDashOffset = 0;
 }
 
-// Draw player and enemies
-function drawCar(img, x, y, w, h, rotate=false){
+// draw a car sprite if image loaded else rectangle
+function drawCar(img, cx, cy, w, h){
   if(img && img.complete){
-    ctx.save();
-    ctx.translate(x, y);
-    if(rotate) ctx.rotate(Math.PI); // if needed to flip
-    ctx.drawImage(img, -w/2, -h/2, w, h);
-    ctx.restore();
+    ctx.drawImage(img, cx - w/2, cy - h/2, w, h);
   } else {
-    ctx.fillStyle = '#ff6f00';
-    ctx.fillRect(x - w/2, y - h/2, w, h);
+    ctx.fillStyle = '#333'; ctx.fillRect(cx - w/2, cy - h/2, w, h);
   }
 }
 
-// Update and draw particles
-function updateParticles(dt){
-  const tnow = now();
-  for(let i=particles.length-1;i>=0;i--){
-    const p = particles[i];
-    const age = tnow - p.born;
-    if(age > p.life){ particles.splice(i,1); continue; }
-    p.x += p.vx * dt;
-    p.y += p.vy * dt;
-    const a = 1 - age / p.life;
-    ctx.fillStyle = p.color.replace(/[\d\.]+\)$/,'') + a + ')';
-    ctx.beginPath();
-    ctx.arc(p.x, p.y, p.size * a, 0, Math.PI*2);
-    ctx.fill();
-  }
+// HUD
+function drawHUD(elapsed){
+  ctx.fillStyle = 'rgba(255,255,255,0.95)';
+  ctx.fillRect(8,8,260,78);
+  ctx.strokeStyle = '#123'; ctx.strokeRect(8,8,260,78);
+  ctx.fillStyle = '#123';
+  ctx.font = '16px sans-serif';
+  ctx.fillText("Shaurya Highway", 18, 30);
+  ctx.font = '14px monospace';
+  ctx.fillText('Speed: ' + Math.round(player.speed * 10) + ' km/h', 18, 52);
+  ctx.fillText('Time: ' + elapsed.toFixed(2) + 's', 18, 72);
 }
 
-// Main update loop
+// Main game loop & update
 let last = performance.now();
+let gameStart = performance.now();
 function loop(nowTs){
-  const dt = Math.min(0.05, (nowTs - last) / 1000);
+  const dt = Math.min(0.045, (nowTs - last) / 1000);
   last = nowTs;
+  const elapsed = (nowTs - gameStart) / 1000;
 
-  if(!gameStart) gameStart = nowTs;
-  if(running) elapsed = (nowTs - gameStart) / 1000;
-
-  // handle input for lanes
-  if(keys['ArrowLeft'] || keys['a']){
-    if(player.lane > 0){ player.lane = Math.max(0, player.lane - 1); keys['ArrowLeft'] = false; keys['a'] = false; }
+  // input: left/right to change lane, up/down to accelerate/brake
+  if((keys['ArrowLeft'] || keys['a']) && player.lane > 0){
+    player.lane = Math.max(0, player.lane - 1); keys['ArrowLeft']=false; keys['a']=false;
+    player.x = laneCenter(player.lane);
   }
-  if(keys['ArrowRight'] || keys['d']){
-    if(player.lane < lanes-1){ player.lane = Math.min(lanes-1, player.lane + 1); keys['ArrowRight'] = false; keys['d'] = false; }
+  if((keys['ArrowRight'] || keys['d']) && player.lane < LANES-1){
+    player.lane = Math.min(LANES-1, player.lane + 1); keys['ArrowRight']=false; keys['d']=false;
+    player.x = laneCenter(player.lane);
   }
-  if(keys['ArrowUp'] || keys['w']){ player.speed = clamp(player.speed + player.accel*dt*60, player.minSpeed, player.maxSpeed); if(!audioCtx) ensureAudio(); }
-  else if(keys['ArrowDown'] || keys['s']){ player.speed = clamp(player.speed - player.accel*dt*60, player.minSpeed, player.maxSpeed); }
-  else { player.speed = clamp(player.speed - 0.06*dt*60, player.minSpeed, player.maxSpeed); }
 
-  // Smooth lane movement
-  player.targetX = laneCenter(player.lane);
-  player.x += (player.targetX - player.x) * clamp(10 * dt, 0, 1);
+  if(keys['ArrowUp'] || keys['w']){
+    player.speed = Math.min(player.maxSpeed, player.speed + player.accel * dt * 60);
+    if(!audioCtx) ensureAudio();
+  } else if(keys['ArrowDown'] || keys['s']){
+    player.speed = Math.max(player.minSpeed, player.speed - player.accel * dt * 60);
+  } else {
+    // natural slight deceleration
+    player.speed = Math.max(player.minSpeed, player.speed - 0.04 * dt * 60);
+  }
 
-  // scroll road according to speed
-  scroll += player.speed * dt * 40;
-  // spawn enemies by time
-  if(nowTs - lastEnemySpawn > enemySpawnInterval){
+  // update scroll (visual center dashes movement)
+  scroll += player.speed * dt * 28;
+
+  // spawn enemies (easy) based on time
+  if(nowTs - lastSpawn > SPAWN_INTERVAL){
     spawnEnemy();
-    lastEnemySpawn = nowTs;
+    lastSpawn = nowTs;
   }
 
-  // update enemies
+  // update enemies: move down the screen towards player view. They always move downward.
   for(let i = enemies.length - 1; i >= 0; i--){
     const e = enemies[i];
-    e.y += e.speed * dt * 40;
-    // simple lateral smoothing to lane center
-    const targetEx = laneCenter(e.lane);
-    e.x += (targetEx - e.x) * dt * 8;
-    // off bottom? remove and increase score
-    if(e.y - e.height/2 > H + 80){
+    // enemies move downward. Add a bit of variation and let player's speed slightly influence apparent approach:
+    e.y += (e.speed + (player.speed * 0.2)) * dt * 60;
+    // smooth lane centering
+    const exTarget = laneCenter(e.lane);
+    e.x += (exTarget - e.x) * dt * 6;
+
+    // if enemy passed below screen -> remove and increment small score (optional)
+    if(e.y - e.height/2 > H + 120){
       enemies.splice(i,1);
-      score += 1;
       continue;
     }
-    // collision with player (approx)
-    if(player.alive){
-      const pbox = { x: player.x - player.width/2, y: player.y - player.height/2, width: player.width, height: player.height };
-      const ebox = { x: e.x - e.width/2, y: e.y - e.height/2, width: e.width, height: e.height };
-      if(aabb(pbox, ebox)){
-        // crash
-        player.alive = false;
-        running = false;
-        spawnParticles(player.x, player.y, 14);
-        playCrashSound();
-        showMessage = 'Crashed! Press Restart';
-        msgTimer = 3000;
-      }
+
+    // collision check: approximate bounding boxes
+    const pbox = { x: player.x - player.width/2, y: player.y - player.height/2, width: player.width, height: player.height };
+    const ebox = { x: e.x - e.width/2, y: e.y - e.height/2, width: e.width, height: e.height };
+    if(aabb(pbox, ebox)){
+      // crash: do NOT stop game; make sound, particles, reduce speed a bit and continue
+      playCrash();
+      spawnParticles(player.x + (Math.random()-0.5)*20, player.y + (Math.random()-0.5)*20, 12);
+      // slight knockback: move enemy down faster a bit and reduce player speed briefly
+      e.y += 18;
+      player.speed = Math.max(player.minSpeed, player.speed - 2.5);
+      // gentle visual flash: we can show a temporary message
+      tempMessage('Crash! Keep going', 1200);
     }
   }
 
-  // update particles
-  // draw everything
+  // drawing
   ctx.clearRect(0,0,W,H);
-  drawBackground();
+
+  // static footpath (left & right)
+  drawStaticFootpath();
+
+  // road & moving dashes
   drawRoad();
 
-  // draw moving lane texture/road markers by using scroll offset for dashed lines
-  // (we already used dashed centerlines; to enhance, draw repeating small marks)
-  ctx.save();
-  ctx.translate(0, scroll%40); // subtle shift for side textures
-  ctx.restore();
-
-  // draw enemies
+  // draw enemies under player
   for(const e of enemies){
     drawCar(e.img, e.x, e.y, e.width, e.height);
   }
 
-  // draw player (on top)
+  // draw player on top
   drawCar(playerImg, player.x, player.y, player.width, player.height);
 
-  // draw HUD
-  ctx.fillStyle = 'rgba(255,255,255,0.9)';
-  ctx.fillRect(8,8,260,80);
-  ctx.strokeStyle = '#222'; ctx.strokeRect(8,8,260,80);
-  ctx.fillStyle = '#222'; ctx.font = '16px sans-serif';
-  ctx.fillText('Shaurya Highway', 18, 30);
-  ctx.font = '14px monospace';
-  ctx.fillText('Speed: ' + Math.round(player.speed * 10) + ' km/h', 18, 52);
-  ctx.fillText('Score: ' + score, 140, 52);
-  ctx.fillText('Time: ' + elapsed.toFixed(2) + 's', 18, 72);
-
   // draw particles
-  updateParticles(dt * 60);
+  updateParticles(dt);
+
+  // HUD
+  drawHUD(elapsed);
 
   // engine sound update
-  if(audioCtx && running){
-    updateEngineSound();
-  }
+  if(audioCtx) updateEngineSound();
 
   requestAnimationFrame(loop);
 }
 
-// spawn enemy helper uses global lane centers
-function spawnEnemy(){
-  // not spawn too close to player
-  // pick lane not occupied at top (simple)
-  const lane = Math.floor(Math.random()*lanes);
-  const x = laneCenter(lane);
-  const y = -60;
-  const colors = ['#58a0ff','#7ee1a8','#ff6b6b','#ffd54f','#9c27b0'];
-  const col = colors[Math.floor(Math.random()*colors.length)];
-  const eimg = enemyImgForColor(col);
-  const speed = clamp(player.speed + 2 + Math.random()*6, 4, player.maxSpeed + 6);
-  enemies.push({lane, x, y, width: player.width*0.95, height: player.height*0.95, img: eimg, speed});
+// temporary on-screen message
+let messageText = '';
+let messageTimeout = 0;
+function tempMessage(txt, ms){
+  messageText = txt; messageTimeout = ms;
+  // draw message over HUD briefly (non-blocking)
+  setTimeout(()=>{ messageText=''; }, ms);
 }
 
-// Restart button handler
-document.getElementById('restart').addEventListener('click', ()=>{
-  // reset
-  enemies.splice(0, enemies.length);
-  particles.splice(0, particles.length);
-  player.lane = Math.floor(lanes/2);
-  player.x = laneCenter(player.lane);
-  player.targetX = player.x;
-  player.speed = 6;
-  player.alive = true;
-  scroll = 0;
-  score = 0;
-  running = true;
-  gameStart = performance.now();
-  lastEnemySpawn = 0;
-  last = performance.now();
-  showMessage = '';
-  requestAnimationFrame(loop);
-});
-
-// fullscreen button
-document.getElementById('playfull').addEventListener('click', ()=>{ if(canvas.requestFullscreen) canvas.requestFullscreen(); });
-
-// resume audio on first user gesture (mobile)
+// resume audio for autoplay policies
 function resumeAudioOnGesture(){
   if(!audioCtx) return;
   if(audioCtx.state === 'suspended'){
@@ -445,7 +387,24 @@ function resumeAudioOnGesture(){
 window.addEventListener('pointerdown', ()=>{ if(!audioCtx) ensureAudio(); resumeAudioOnGesture(); }, {once:true});
 window.addEventListener('touchstart', ()=>{ if(!audioCtx) ensureAudio(); resumeAudioOnGesture(); }, {once:true});
 
+// Restart & fullscreen buttons (reuse existing UI)
+document.getElementById('restart').addEventListener('click', ()=>{
+  enemies.splice(0,enemies.length);
+  particles.splice(0,particles.length);
+  player.lane = Math.floor(LANES/2);
+  player.x = laneCenter(player.lane);
+  player.speed = 6;
+  player.alive = true;
+  scroll = 0;
+  lastSpawn = performance.now();
+  gameStart = performance.now();
+  last = performance.now();
+  requestAnimationFrame(loop);
+});
+document.getElementById('playfull').addEventListener('click', ()=>{ if(canvas.requestFullscreen) canvas.requestFullscreen(); });
+
 // Start game
+lastSpawn = performance.now() - SPAWN_INTERVAL * 0.4;
 gameStart = performance.now();
 last = performance.now();
 requestAnimationFrame(loop);
