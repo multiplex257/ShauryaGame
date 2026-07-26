@@ -2,36 +2,31 @@
 
 This small kid-friendly racing game is made for Shaurya and includes two Bangalore landmarks: Assetz Marq (Whitefield) and Bishop Cotton Boys (Residency Road). It's a lightweight HTML5 game that runs in a browser. An Electron wrapper is included so you can build a native executable for Windows/Mac/Linux.
 
-Files added:
-- index.html — main game page
-- style.css — styles
-- game.js — game logic
-- package.json & main.js — Electron wrapper and build config
+This update adds:
+- GitHub Actions workflow to build the app on push and upload dist/ artifacts for Windows/macOS/Linux.
+- On-screen touch controls for tablets and phones.
+- Simple synthesized sound effects (engine hum, crash, win) using WebAudio — no external audio files required.
+- Landmark images generated as friendly inline SVGs so no external images are required. If you supply photos, I can swap them in.
 
-How to play right away (no install):
-1. Open index.html in any modern browser (Chrome/Edge/Firefox).
-2. Use arrow keys (or WASD) to drive the red car.
-3. Visit both landmarks (Assetz Marq and Bishop Cotton Boys), then return to the Start/Finish area to win.
+Files updated/added:
+- .github/workflows/build.yml — CI build and artifact upload
+- index.html — touch controls added
+- style.css — touch control styling
+- game.js — touch, WebAudio, SVG landmarks
 
-How to make an executable (Windows example) using Electron builder:
-1. Install Node.js (16+ recommended) and Git.
-2. In the repo root run:
-   npm install
-3. To test in a window:
-   npm start
-4. To build installers for your OS (this will create a distribution):
-   npm run dist
-5. The generated artifacts will be in the `dist/` folder.
+How the CI works
+- On push to main (or manual dispatch) the workflow runs on ubuntu-latest, windows-latest, and macos-latest.
+- It runs `npm ci` then `npm run dist` (electron-builder) and uploads any files in `dist/` as workflow artifacts.
 
-Notes:
-- The Electron build step runs on your machine or a CI runner — this repository contains the source and build config.
-- If you only want a simple executable for a kid's device, opening index.html in a browser is the quickest.
+Notes about codesigning and releases
+- macOS and Windows signed builds require code signing credentials (certificates). If you want signed installers, add the necessary secrets (for example, for macOS: APPLE_CERT and related, for Windows: CSC_LINK and CSC_KEY_PASSWORD). The workflow uses the standard GH_TOKEN and reads any signing-related secrets if present.
+- The uploaded artifacts are unsigned by default unless you configure and provide the signing secrets.
 
-Customization: I placed the landmarks as friendly labeled boxes on the map and personalized messages for Shaurya. If you'd like actual map tiles or photos of Assetz Marq and Bishop Cotton Boys, I can add them (please confirm you have rights or provide images).
+Next steps I can take for you
+- Swap the inline SVG landmarks with real photos or map images if you provide them (image files or public URLs).
+- Add a GitHub Releases step to attach built installers automatically and create a release tag.
+- Tune the CI to run only on tags for release builds and run quick checks on PRs.
 
-If you want, I can:
-- Add simple sound effects for engine and win.
-- Add a mobile-touch on-screen control overlay.
-- Produce a ready-made Windows .exe by running the build for you if you enable CI with a runner or provide a build artifact location.
-
-Enjoy driving, Shaurya!
+If you'd like, I can now:
+- Add a workflow step that creates a GitHub Release and attaches the artifacts when a new tag is pushed.
+- Replace the inline SVGs with supplied photos (just upload images or share URLs).
