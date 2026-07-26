@@ -1,109 +1,91 @@
-// Upgraded game.js - smoother physics, camera, sprite car, skid particles, nicer HUD
-// Drop-in replacement for the previous game.js
+// Straight-highway racer: lane-based vertical scroller (pixel-ish style)
+// Replace your existing game.js with this file.
 
 const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d');
-const SCREEN_W = canvas.width, SCREEN_H = canvas.height;
+const W = canvas.width, H = canvas.height;
 
-// World dimensions (bigger than canvas so camera can move)
-const WORLD_W = 2000, WORLD_H = 1200;
+// Configuration
+const lanes = 3;                       // number of lanes
+const roadWidth = Math.floor(W * 0.55);
+const laneWidth = Math.floor(roadWidth / lanes);
+const roadX = Math.floor((W - roadWidth)/2);
+const borderWidth = 14;
+const grassColor = '#6cc070';
 
-// Car (physics uses velocity vector)
-const car = {
-  x: 220, y: WORLD_H - 220,
-  angle: -Math.PI / 2,     // facing up
-  speed: 0,
-  vx: 0, vy: 0,
-  accelPower: 0.35,
-  brakePower: 0.6,
-  maxSpeed: 10,
-  reverseMax: -4,
-  angularVelocity: 0,
-  steerSpeed: 0.04,        // base steer responsiveness
-  width: 48, height: 96,
-  traction: 0.92,          // lateral damping
-  sprite: null,
+// Player
+const player = {
+  lane: Math.floor(lanes/2),           // current lane index 0..lanes-1
+  x: 0,                                // computed from lane
+  y: H - 140,                          // fixed vertical position
+  targetX: 0,                          // for smooth lane transitions
+  width: laneWidth * 0.6,             // sprite draw size
+  height: Math.floor(laneWidth * 0.9),
+  speed: 6,                            // base forward speed (affects scroll)
+  accel: 0.6,
+  maxSpeed: 18,
+  minSpeed: 3,
+  color: '#ffb74d',                    // player car color
+  alive: true
 };
 
-// Simple track path (we'll draw a curvy road)
-const track = {
-  // centerline poly points in world coords
-  points: [
-    {x: 200, y: WORLD_H - 200},
-    {x: 300, y: WORLD_H - 600},
-    {x: 500, y: WORLD_H - 820},
-    {x: 900, y: WORLD_H - 860},
-    {x: 1300, y: WORLD_H - 720},
-    {x: 1600, y: WORLD_H - 420},
-    {x: 1700, y: WORLD_H - 180},
-  ],
-  width: 240
-};
-
-// Obstacles and decorations in world coords
-const obstacles = [
-  {x: 520, y: WORLD_H - 700, w: 60, h: 60},
-  {x: 760, y: WORLD_H - 660, w: 60, h: 40},
-  {x: 1180, y: WORLD_H - 620, w: 80, h: 48},
-  {x: 1500, y: WORLD_H - 420, w: 50, h: 50},
-  {x: 700, y: WORLD_H - 360, w: 60, h: 60}
-];
-
-// HUD & game state
-let keys = {};
-let startTime = null;
+// Road scrolling
+let scroll = 0;
+let gameStart = null;
 let elapsed = 0;
+let score = 0;
 let running = true;
-let checkpointsPassed = [false, false]; // keep as before
-let bestTime = localStorage.getItem('shaurya_best_time') ? parseFloat(localStorage.getItem('shaurya_best_time')) : null;
-let showMessage = '';
-let msgTimer = 0;
 
-// Particles for skids/smoke
+// Enemies
+const enemies = [];
+const enemySpawnInterval = 900; // ms
+let lastEnemySpawn = 0;
+
+// Effects
 const particles = [];
+
+// Input
+let keys = {};
 
 // Audio
 let audioCtx = null;
-let engineOsc = null;
 let engineGain = null;
+let engineOsc = null;
 
-// Bootsprite: inline SVG car (child-friendly) as data URI
-function createCarSpriteDataURL() {
+// Create simple pixel-ish car SVG as data URI
+function createCarSVG(color, stripe) {
   const svg = `
-  <svg xmlns='http://www.w3.org/2000/svg' width='120' height='240' viewBox='0 0 120 240'>
-    <defs>
-      <linearGradient id='g1' x1='0' x2='1'>
-        <stop offset='0' stop-color='#ff6b6b'/>
-        <stop offset='1' stop-color='#d32f2f'/>
-      </linearGradient>
-      <filter id='s' x='-50%' y='-50%' width='200%' height='200%'>
-        <feDropShadow dx='0' dy='4' stdDeviation='6' flood-color='#000' flood-opacity='0.25'/>
-      </filter>
-    </defs>
-    <g filter='url(#s)'>
-      <rect x='10' y='40' rx='12' ry='12' width='100' height='160' fill='url(#g1)' stroke='#2b2b2b' stroke-width='3'/>
-      <rect x='22' y='56' width='76' height='56' rx='6' fill='#fff' opacity='0.9'/>
-      <rect x='22' y='120' width='22' height='24' rx='4' fill='#222'/>
-      <rect x='76' y='120' width='22' height='24' rx='4' fill='#222'/>
-      <circle cx='30' cy='200' r='10' fill='#111'/>
-      <circle cx='90' cy='200' r='10' fill='#111'/>
-    </g>
+  <svg xmlns='http://www.w3.org/2000/svg' width='64' height='112' viewBox='0 0 64 112'>
+    <rect width='64' height='112' rx='8' ry='8' fill='${color}' stroke='#222' stroke-width='2'/>
+    <rect x='12' y='12' width='40' height='28' rx='4' fill='#fff' opacity='0.9'/>
+    <rect x='18' y='46' width='10' height='44' rx='3' fill='#111'/>
+    <rect x='36' y='46' width='10' height='44' rx='3' fill='#111'/>
+    ${ stripe ? `<rect x='30' y='8' width='4' height='96' fill='${stripe}' />` : '' }
   </svg>`;
   return 'data:image/svg+xml;utf8,' + encodeURIComponent(svg);
 }
 
-// Load sprite image
-(function loadSprite(){
+const playerImg = new Image();
+playerImg.src = createCarSVG(player.color, '#ddb37b');
+
+function enemyImgForColor(c){
   const img = new Image();
-  img.src = createCarSpriteDataURL();
-  img.onload = () => { car.sprite = img; };
-})();
+  img.src = createCarSVG(c, '');
+  return img;
+}
 
-// Utility
+// Utility helpers
+function laneCenter(l){
+  return roadX + laneWidth * l + laneWidth/2;
+}
 function clamp(v,a,b){ return Math.max(a, Math.min(b, v)); }
-function lerp(a,b,t){ return a + (b-a)*t; }
+function now(){ return performance.now(); }
 
-// Simple audio setup (engine hum)
+// Init positions
+player.x = laneCenter(player.lane);
+player.targetX = player.x;
+
+// Audio setup (small engine hum)
 function ensureAudio(){
   if(audioCtx) return;
   audioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -117,369 +99,341 @@ function ensureAudio(){
   engineOsc.start();
 }
 
-// Particle helper
-function spawnParticle(x,y,vx,vy,life, size, color){
-  particles.push({x,y,vx,vy,life,age:0,size,color});
-}
-
-// Input
-window.addEventListener('keydown', e => { keys[e.key] = true; if(!audioCtx) ensureAudio(); });
-window.addEventListener('keyup', e => { keys[e.key] = false; });
-
-// Touch buttons: reuse existing touch-controls buttons (they set data-key)
-document.getElementById('touchControls')?.addEventListener('touchstart', e => { e.preventDefault(); for(const t of e.changedTouches){ const el = document.elementFromPoint(t.clientX, t.clientY); if(el && el.dataset && el.dataset.key) keys[el.dataset.key] = true; if(!audioCtx) ensureAudio(); } }, {passive:false});
-document.getElementById('touchControls')?.addEventListener('touchend', e => { e.preventDefault(); for(const t of e.changedTouches){ const el = document.elementFromPoint(t.clientX, t.clientY); if(el && el.dataset && el.dataset.key) keys[el.dataset.key] = false; } }, {passive:false});
-document.getElementById('touchControls')?.addEventListener('mousedown', e => { const el = e.target.closest('.tc-btn'); if(el && el.dataset && el.dataset.key) keys[el.dataset.key] = true; if(!audioCtx) ensureAudio(); });
-document.getElementById('touchControls')?.addEventListener('mouseup', e => { const el = e.target.closest('.tc-btn'); if(el && el.dataset && el.dataset.key) keys[el.dataset.key] = false; });
-
-// Basic collision util (AABB)
-function aabbOverlap(a,b){
-  return !(a.x + a.w < b.x || a.x > b.x + b.w || a.y + a.h < b.y || a.y > b.y + b.h);
-}
-
-// Draw world to an offscreen transform: camera follows car
-function worldToScreen(wx, wy, cam){ return { x: wx - cam.x + SCREEN_W/2, y: wy - cam.y + SCREEN_H/2 }; }
-
-// Road drawing (draw wide textured lane with center dashed line)
-function drawRoad(cam){
-  // draw a large faded background for road area
-  ctx.save();
-  // draw the road shape by creating a thick polyline path around centerline
-  ctx.lineJoin = 'round'; ctx.lineCap = 'round';
-
-  // Draw road asphalt (thick stroke along centerline)
-  ctx.strokeStyle = '#2f3b4a';
-  ctx.lineWidth = track.width;
-  ctx.beginPath();
-  for(let i=0;i<track.points.length;i++){
-    const p = track.points[i];
-    const s = worldToScreen(p.x, p.y, cam);
-    if(i===0) ctx.moveTo(s.x, s.y); else ctx.lineTo(s.x, s.y);
-  }
-  ctx.stroke();
-
-  // road edge highlight
-  ctx.strokeStyle = '#4a5768';
-  ctx.lineWidth = track.width - 18;
-  ctx.globalAlpha = 0.9;
-  ctx.beginPath();
-  for(let i=0;i<track.points.length;i++){
-    const p = track.points[i];
-    const s = worldToScreen(p.x, p.y, cam);
-    if(i===0) ctx.moveTo(s.x, s.y); else ctx.lineTo(s.x, s.y);
-  }
-  ctx.stroke();
-  ctx.globalAlpha = 1;
-
-  // center dashed line
-  ctx.strokeStyle = '#ffd';
-  ctx.lineWidth = 4;
-  ctx.setLineDash([18, 16]);
-  ctx.beginPath();
-  for(let i=0;i<track.points.length;i++){
-    const p = track.points[i];
-    const s = worldToScreen(p.x, p.y, cam);
-    if(i===0) ctx.moveTo(s.x, s.y); else ctx.lineTo(s.x, s.y);
-  }
-  ctx.stroke();
-  ctx.setLineDash([]);
-
-  ctx.restore();
-}
-
-// Draw obstacles
-function drawObstacles(cam){
-  for(const o of obstacles){
-    const s = worldToScreen(o.x, o.y, cam);
-    ctx.fillStyle = '#6b8';
-    ctx.fillRect(s.x - o.w/2, s.y - o.h/2, o.w, o.h);
-    ctx.strokeStyle = '#374';
-    ctx.strokeRect(s.x - o.w/2, s.y - o.h/2, o.w, o.h);
-  }
-}
-
-// HUD: speedometer and time
-function drawHUD(){
-  // speed
-  ctx.save();
-  ctx.resetTransform();
-  ctx.fillStyle = 'rgba(255,255,255,0.9)';
-  ctx.strokeStyle = '#035';
-  ctx.lineWidth = 2;
-  ctx.fillRect(12, 12, 220, 72);
-  ctx.strokeRect(12,12,220,72);
-  ctx.fillStyle = '#033';
-  ctx.font = '16px sans-serif';
-  ctx.fillText('Shaurya Race', 20, 34);
-
-  ctx.font = '14px monospace';
-  ctx.fillText('Speed: ' + Math.round(Math.hypot(car.vx, car.vy) * 10) + ' km/h', 20, 58);
-
-  ctx.fillText('Time: ' + elapsed.toFixed(2) + 's', 120, 58);
-
-  if(bestTime) ctx.fillText('Best: ' + bestTime.toFixed(2) + 's', 20, 78);
-  ctx.restore();
-
-  // message
-  if(msgTimer > 0){
-    ctx.save();
-    ctx.resetTransform();
-    ctx.fillStyle = 'rgba(4,80,120,0.92)';
-    ctx.fillRect(SCREEN_W/2 - 200, 20, 400, 36);
-    ctx.fillStyle = '#fff';
-    ctx.font = '16px sans-serif';
-    ctx.fillText(showMessage, SCREEN_W/2 - ctx.measureText(showMessage).width/2, 44);
-    ctx.restore();
-  }
-}
-
-// Particle update/draw
-function updateParticles(dt, cam){
-  for(let i = particles.length-1; i >= 0; i--){
-    const p = particles[i];
-    p.vx *= 0.995; p.vy *= 0.995;
-    p.x += p.vx * dt * 60;
-    p.y += p.vy * dt * 60;
-    p.age += dt;
-    if(p.age > p.life) particles.splice(i,1);
-  }
-
-  // draw
-  for(const p of particles){
-    const s = worldToScreen(p.x, p.y, cam);
-    const alpha = 1 - (p.age / p.life);
-    ctx.save();
-    ctx.globalAlpha = alpha * 0.9;
-    ctx.fillStyle = p.color;
-    ctx.beginPath();
-    ctx.arc(s.x, s.y, p.size * (1 - p.age/p.life), 0, Math.PI*2);
-    ctx.fill();
-    ctx.restore();
-  }
-}
-
-// Camera: smooth follow
-const camera = { x: car.x, y: car.y };
-function updateCamera(dt){
-  camera.x = lerp(camera.x, car.x, 0.06);
-  camera.y = lerp(camera.y, car.y, 0.06);
-}
-
-// Engine sound update
 function updateEngineSound(){
   if(!audioCtx) return;
-  const speed = Math.hypot(car.vx, car.vy);
-  const freq = 80 + (speed / car.maxSpeed) * 700;
-  engineOsc.frequency.setTargetAtTime(freq, audioCtx.currentTime, 0.08);
-  const gainTarget = Math.min(0.24, 0.02 + (speed / car.maxSpeed) * 0.2);
-  engineGain.gain.setTargetAtTime(gainTarget, audioCtx.currentTime, 0.08);
+  const s = player.speed;
+  const freq = 100 + (s / player.maxSpeed) * 700;
+  engineOsc.frequency.setTargetAtTime(freq, audioCtx.currentTime, 0.05);
+  const g = Math.min(0.18, 0.02 + (s / player.maxSpeed) * 0.16);
+  engineGain.gain.setTargetAtTime(g, audioCtx.currentTime, 0.05);
 }
 
-// Game update physics
-function update(dt){
-  if(!running) return;
-  // Inputs
-  const accelInput = (keys['ArrowUp'] || keys['w']) ? 1 : 0;
-  const brakeInput = (keys['ArrowDown'] || keys['s']) ? 1 : 0;
-  const left = (keys['ArrowLeft'] || keys['a']) ? 1 : 0;
-  const right = (keys['ArrowRight'] || keys['d']) ? 1 : 0;
-
-  // Forward acceleration (based on car angle)
-  const forwardAx = Math.cos(car.angle) * (accelInput * car.accelPower - brakeInput * car.brakePower);
-  const forwardAy = Math.sin(car.angle) * (accelInput * car.accelPower - brakeInput * car.brakePower);
-
-  // Add acceleration to velocity
-  car.vx += forwardAx * dt * 60;
-  car.vy += forwardAy * dt * 60;
-
-  // Speed clamp
-  const localSpeed = Math.hypot(car.vx, car.vy);
-  if(localSpeed > car.maxSpeed){
-    const scale = car.maxSpeed / localSpeed;
-    car.vx *= scale; car.vy *= scale;
-  }
-  if(localSpeed < Math.abs(car.reverseMax) && accelInput === 0 && brakeInput === 0){
-    // small friction
-    car.vx *= 0.995; car.vy *= 0.995;
-  }
-
-  // Steering: stronger when moving forward, less when slow
-  const speedFactor = clamp(localSpeed / car.maxSpeed, 0, 1);
-  const steer = (right - left) * car.steerSpeed * (0.4 + 1.2 * speedFactor);
-  car.angle += steer * dt * 60;
-
-  // Traction: reduce lateral velocity relative to car heading
-  // compute car heading unit vector
-  const hx = Math.cos(car.angle), hy = Math.sin(car.angle);
-  // forward speed component
-  const forward = car.vx * hx + car.vy * hy;
-  // lateral speed component
-  const lateral = -car.vx * hy + car.vy * hx;
-  // damp lateral by traction
-  const newLateral = lateral * car.traction;
-  // reconstruct vx, vy
-  car.vx = forward * hx - newLateral * hy;
-  car.vy = forward * hy + newLateral * hx;
-
-  // Update position
-  car.x += car.vx * dt * 60;
-  car.y += car.vy * dt * 60;
-
-  // Boundaries: clamp inside world with bounce
-  if(car.x < 30){ car.x = 30; car.vx *= -0.4; spawnParticle(car.x+10, car.y, -car.vx*0.2, 0, 0.6, 8, 'rgba(0,0,0,0.5)'); }
-  if(car.x > WORLD_W - 30){ car.x = WORLD_W - 30; car.vx *= -0.4; spawnParticle(car.x-10, car.y, -car.vx*0.2, 0, 0.6, 8, 'rgba(0,0,0,0.5)'); }
-  if(car.y < 30){ car.y = 30; car.vy *= -0.4; spawnParticle(car.x, car.y+10, 0, -car.vy*0.2, 0.6, 8, 'rgba(0,0,0,0.5)'); }
-  if(car.y > WORLD_H - 30){ car.y = WORLD_H - 30; car.vy *= -0.4; spawnParticle(car.x, car.y-10, 0, -car.vy*0.2, 0.6, 8, 'rgba(0,0,0,0.5)'); }
-
-  // Collisions with obstacles
-  for(const o of obstacles){
-    const rect = { x: o.x - o.w/2, y: o.y - o.h/2, w: o.w, h: o.h };
-    const carBox = { x: car.x - car.width/3, y: car.y - car.height/3, w: car.width/1.5, h: car.height/1.5 };
-    if(aabbOverlap(rect, carBox)){
-      // simple pushback: reflect velocity and spawn particles
-      car.vx *= -0.45; car.vy *= -0.45;
-      car.x += car.vx * 6; car.y += car.vy * 6;
-      spawnParticle(car.x, car.y, -car.vx*0.05, -car.vy*0.05, 0.8, 12, 'rgba(80,80,80,0.8)');
-      showTempMessage('Ouch! Be careful.');
-    }
-  }
-
-  // Skid particles when turning hard or braking
-  if(Math.abs(steer) > 0.03 && localSpeed > 3){
-    // left or right tyres smoke
-    const sign = Math.sign(steer);
-    // world coords for tyres (slightly behind the car center)
-    const tyreOffsetX = car.x - hx * 10;
-    const tyreOffsetY = car.y - hy * 10;
-    for(let i=0;i<2;i++){
-      const side = (i===0) ? 14 : -14;
-      const tx = tyreOffsetX + (-hy*side);
-      const ty = tyreOffsetY + (hx*side);
-      spawnParticle(tx, ty, -car.vx*0.02 + (Math.random()-0.5)*0.3, -car.vy*0.02 + (Math.random()-0.5)*0.3, 0.8, 6 + Math.random()*4, 'rgba(30,30,30,0.7)');
-    }
-  }
-  if(brakeInput && Math.hypot(car.vx,car.vy) > 4){
-    // brake smoke
-    spawnParticle(car.x - hx*18, car.y - hy*18, -car.vx*0.05 + (Math.random()-0.5)*0.5, -car.vy*0.05 + (Math.random()-0.5)*0.5, 0.8, 8, 'rgba(50,50,60,0.9)');
-    spawnParticle(car.x + hy*18, car.y - hx*18, -car.vx*0.05 + (Math.random()-0.5)*0.5, -car.vy*0.05 + (Math.random()-0.5)*0.5, 0.8, 6, 'rgba(50,50,60,0.9)');
-  }
-
-  // update timers and audio
-  elapsed = (performance.now() - startTime) / 1000;
-  if(audioCtx) updateEngineSound();
+function playCrashSound(){
+  if(!audioCtx) ensureAudio();
+  const t = audioCtx.currentTime;
+  const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+  o.type='square'; o.frequency.setValueAtTime(180, t);
+  g.gain.setValueAtTime(0.4, t);
+  o.connect(g); g.connect(audioCtx.destination);
+  o.start(); o.frequency.exponentialRampToValueAtTime(20, t+0.45);
+  g.gain.exponentialRampToValueAtTime(0.001, t+0.5);
+  setTimeout(()=>{ o.stop(); o.disconnect(); g.disconnect(); }, 700);
 }
 
-// Simple message display
-function showTempMessage(t, time = 1600){
-  showMessage = t; msgTimer = time / 16;
+// Spawn an enemy car in a lane, with small color variety, and speed relative to player
+function spawnEnemy(){
+  const lane = Math.floor(Math.random()*lanes);
+  const x = laneCenter(lane);
+  // spawn just above screen
+  const y = -60 - Math.random()*120;
+  const colorSet = ['#58a0ff','#7ee1a8','#ff6b6b','#ffd54f','#9c27b0'];
+  const col = colorSet[Math.floor(Math.random()*colorSet.length)];
+  const img = enemyImgForColor(col);
+  const speed = clamp(player.speed - 4 + Math.random()*8, 2, player.maxSpeed+2); // relative
+  enemies.push({lane, x, y, width: player.width*0.95, height: player.height*0.95, img, speed});
 }
 
-// Draw everything
-function draw(cam){
-  // Clear background (sky)
-  ctx.save();
-  ctx.fillStyle = '#bfe7ff';
-  ctx.fillRect(0,0,SCREEN_W,SCREEN_H);
+// Collisions AABB
+function aabb(a,b){
+  return !(a.x + a.width < b.x || a.x > b.x + b.width || a.y + a.height < b.y || a.y > b.y + b.height);
+}
 
-  // subtle ground gradient
-  ctx.fillStyle = 'linear-gradient(#dff3ff,#cfe8ff)';
-
-  // draw road and world objects in world coords transformed by camera
-  drawRoad(cam);
-  drawObstacles(cam);
-
-  // draw track-side grass/decor
-  // (decorate sides with green)
-  ctx.globalCompositeOperation = 'destination-over';
-
-  // draw particles (skid smoke) under car for depth
-  updateParticles(1/60, cam);
-
-  // draw car (sprite) at center of camera screen relative to car world coords
-  // compute car screen position
-  const carScr = worldToScreen(car.x, car.y, cam);
-  ctx.save();
-  ctx.translate(carScr.x, carScr.y);
-  ctx.rotate(car.angle + Math.PI/2); // sprite default faces up -> adjust if needed
-
-  // draw shadow
-  ctx.fillStyle = 'rgba(0,0,0,0.18)';
-  ctx.beginPath();
-  ctx.ellipse(0, car.height*0.24, car.width*0.5, car.width*0.2, 0, 0, Math.PI*2);
-  ctx.fill();
-
-  // draw sprite (if loaded) otherwise draw fallback car
-  if(car.sprite){
-    const sx = -car.width/2, sy = -car.height/2;
-    ctx.drawImage(car.sprite, sx, sy, car.width, car.height);
-  } else {
-    ctx.fillStyle = '#e53935';
-    ctx.fillRect(-car.width/2, -car.height/2, car.width, car.height);
+// Particles for small crash effect
+function spawnParticles(x,y, count=8){
+  for(let i=0;i<count;i++){
+    particles.push({
+      x, y,
+      vx: (Math.random()-0.5)*6,
+      vy: (Math.random()-0.5)*6,
+      life: 600 + Math.random()*600,
+      born: now(),
+      size: 4 + Math.random()*5,
+      color: 'rgba(40,40,40,0.9)'
+    });
   }
-
-  ctx.restore();
-
-  // draw particles above car
-  updateParticles(1/60, cam);
-
-  // HUD
-  drawHUD();
-
-  ctx.restore();
 }
 
-// Game loop
-let last = performance.now();
-function loop(now){
-  const dt = Math.min(0.05, (now - last)/1000);
-  last = now;
-  if(startTime === null) startTime = performance.now();
-
-  update(dt);
-  updateCamera(dt);
-
-  // clear canvas
-  ctx.clearRect(0,0,SCREEN_W,SCREEN_H);
-  draw(camera);
-
-  // messages timer
-  if(msgTimer > 0){ msgTimer--; } else { showMessage = ''; }
-
-  requestAnimationFrame(loop);
-}
-
-// Start
-function startGame(){
-  startTime = performance.now();
-  running = true;
-  last = performance.now();
-  requestAnimationFrame(loop);
-}
-
-// Buttons
-document.getElementById('restart').addEventListener('click', ()=>{
-  car.x = 220; car.y = WORLD_H - 220; car.vx = car.vy = 0; car.angle = -Math.PI/2;
-  startTime = performance.now(); elapsed = 0; running = true; showTempMessage('Restarted! Drive safely, Shaurya', 1400);
+// Input wiring (keyboard)
+window.addEventListener('keydown', e => {
+  keys[e.key] = true;
+  if(!audioCtx) ensureAudio();
 });
+window.addEventListener('keyup', e => keys[e.key] = false);
+
+// Touch controls: reuse existing touch buttons which have data-key
+const tc = document.getElementById('touchControls');
+if(tc){
+  tc.addEventListener('touchstart', e=>{
+    e.preventDefault();
+    for(const t of e.changedTouches){
+      const el = document.elementFromPoint(t.clientX, t.clientY);
+      if(!el) continue;
+      const k = el.dataset && el.dataset.key;
+      if(k) keys[k] = true;
+      if(!audioCtx) ensureAudio();
+    }
+  }, {passive:false});
+  tc.addEventListener('touchend', e=>{
+    e.preventDefault();
+    for(const t of e.changedTouches){
+      const el = document.elementFromPoint(t.clientX, t.clientY);
+      if(!el) continue;
+      const k = el.dataset && el.dataset.key;
+      if(k) keys[k] = false;
+    }
+  }, {passive:false});
+  tc.addEventListener('mousedown', e=>{
+    const el = e.target.closest('.tc-btn');
+    if(!el) return;
+    const k = el.dataset && el.dataset.key;
+    if(k){ keys[k] = true; if(!audioCtx) ensureAudio(); }
+  });
+  tc.addEventListener('mouseup', e=>{
+    const el = e.target.closest('.tc-btn');
+    if(!el) return;
+    const k = el.dataset && el.dataset.key;
+    if(k) keys[k] = false;
+  });
+}
+
+// Draw background: grass + roadside trees in pixel-ish dots
+function drawBackground(){
+  // grass
+  ctx.fillStyle = grassColor;
+  ctx.fillRect(0,0,W,H);
+
+  // grass dot pattern left and right
+  const margin = 12;
+  const treeDot = '#4c8b3a';
+  for(let x=margin; x<roadX-8; x+=18){
+    for(let y=20; y<H; y+=18){
+      ctx.fillStyle = Math.random()>0.7 ? treeDot : '#68b76a';
+      ctx.fillRect(x, y + (x%36 === 0 ? 6 : 0), 4, 4);
+    }
+  }
+  for(let x=roadX + roadWidth + 8; x<W-margin; x+=18){
+    for(let y=40; y<H; y+=18){
+      ctx.fillStyle = Math.random()>0.7 ? treeDot : '#68b76a';
+      ctx.fillRect(x, y + (x%30 === 0 ? 4 : 0), 4, 4);
+    }
+  }
+
+  // simple trees (circles) — spaced
+  ctx.fillStyle = '#145f2d';
+  for(let t=0;t<8;t++){
+    const tx = Math.random() < 0.5 ? (Math.random()*(roadX-60)) : (roadX + roadWidth + 20 + Math.random()*(W - (roadX+roadWidth+40)));
+    const ty = 40 + (t * 70);
+    ctx.beginPath();
+    ctx.arc(tx, (ty + (scroll%80)), 14, 0, Math.PI*2);
+    ctx.fill();
+  }
+}
+
+// Draw road, lane markings and side borders
+function drawRoad(){
+  // road base
+  ctx.fillStyle = '#565a60';
+  ctx.fillRect(roadX, 0, roadWidth, H);
+
+  // side borders (red / white stripes)
+  for(let y=0; y<H; y+=28){
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(roadX - borderWidth, y + (scroll%56), borderWidth, 14);
+    ctx.fillStyle = '#c62828';
+    ctx.fillRect(roadX - borderWidth, y + 14 + (scroll%56), borderWidth, 14);
+
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(roadX + roadWidth, y + (scroll%56), borderWidth, 14);
+    ctx.fillStyle = '#c62828';
+    ctx.fillRect(roadX + roadWidth, y + 14 + (scroll%56), borderWidth, 14);
+  }
+
+  // lane divider dashed lines (vertical moving)
+  ctx.strokeStyle = '#e9e9e9';
+  ctx.lineWidth = 6;
+  ctx.setLineDash([28, 18]);
+  for(let i=1;i<lanes;i++){
+    const lx = roadX + i*laneWidth;
+    ctx.beginPath();
+    ctx.moveTo(lx, -1000);
+    ctx.lineTo(lx, H + 1000);
+    ctx.stroke();
+  }
+  ctx.setLineDash([]);
+}
+
+// Draw player and enemies
+function drawCar(img, x, y, w, h, rotate=false){
+  if(img && img.complete){
+    ctx.save();
+    ctx.translate(x, y);
+    if(rotate) ctx.rotate(Math.PI); // if needed to flip
+    ctx.drawImage(img, -w/2, -h/2, w, h);
+    ctx.restore();
+  } else {
+    ctx.fillStyle = '#ff6f00';
+    ctx.fillRect(x - w/2, y - h/2, w, h);
+  }
+}
+
+// Update and draw particles
+function updateParticles(dt){
+  const tnow = now();
+  for(let i=particles.length-1;i>=0;i--){
+    const p = particles[i];
+    const age = tnow - p.born;
+    if(age > p.life){ particles.splice(i,1); continue; }
+    p.x += p.vx * dt;
+    p.y += p.vy * dt;
+    const a = 1 - age / p.life;
+    ctx.fillStyle = p.color.replace(/[\d\.]+\)$/,'') + a + ')';
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.size * a, 0, Math.PI*2);
+    ctx.fill();
+  }
+}
+
+// Main update loop
+let last = performance.now();
+function loop(nowTs){
+  const dt = Math.min(0.05, (nowTs - last) / 1000);
+  last = nowTs;
+
+  if(!gameStart) gameStart = nowTs;
+  if(running) elapsed = (nowTs - gameStart) / 1000;
+
+  // handle input for lanes
+  if(keys['ArrowLeft'] || keys['a']){
+    if(player.lane > 0){ player.lane = Math.max(0, player.lane - 1); keys['ArrowLeft'] = false; keys['a'] = false; }
+  }
+  if(keys['ArrowRight'] || keys['d']){
+    if(player.lane < lanes-1){ player.lane = Math.min(lanes-1, player.lane + 1); keys['ArrowRight'] = false; keys['d'] = false; }
+  }
+  if(keys['ArrowUp'] || keys['w']){ player.speed = clamp(player.speed + player.accel*dt*60, player.minSpeed, player.maxSpeed); if(!audioCtx) ensureAudio(); }
+  else if(keys['ArrowDown'] || keys['s']){ player.speed = clamp(player.speed - player.accel*dt*60, player.minSpeed, player.maxSpeed); }
+  else { player.speed = clamp(player.speed - 0.06*dt*60, player.minSpeed, player.maxSpeed); }
+
+  // Smooth lane movement
+  player.targetX = laneCenter(player.lane);
+  player.x += (player.targetX - player.x) * clamp(10 * dt, 0, 1);
+
+  // scroll road according to speed
+  scroll += player.speed * dt * 40;
+  // spawn enemies by time
+  if(nowTs - lastEnemySpawn > enemySpawnInterval){
+    spawnEnemy();
+    lastEnemySpawn = nowTs;
+  }
+
+  // update enemies
+  for(let i = enemies.length - 1; i >= 0; i--){
+    const e = enemies[i];
+    e.y += e.speed * dt * 40;
+    // simple lateral smoothing to lane center
+    const targetEx = laneCenter(e.lane);
+    e.x += (targetEx - e.x) * dt * 8;
+    // off bottom? remove and increase score
+    if(e.y - e.height/2 > H + 80){
+      enemies.splice(i,1);
+      score += 1;
+      continue;
+    }
+    // collision with player (approx)
+    if(player.alive){
+      const pbox = { x: player.x - player.width/2, y: player.y - player.height/2, width: player.width, height: player.height };
+      const ebox = { x: e.x - e.width/2, y: e.y - e.height/2, width: e.width, height: e.height };
+      if(aabb(pbox, ebox)){
+        // crash
+        player.alive = false;
+        running = false;
+        spawnParticles(player.x, player.y, 14);
+        playCrashSound();
+        showMessage = 'Crashed! Press Restart';
+        msgTimer = 3000;
+      }
+    }
+  }
+
+  // update particles
+  // draw everything
+  ctx.clearRect(0,0,W,H);
+  drawBackground();
+  drawRoad();
+
+  // draw moving lane texture/road markers by using scroll offset for dashed lines
+  // (we already used dashed centerlines; to enhance, draw repeating small marks)
+  ctx.save();
+  ctx.translate(0, scroll%40); // subtle shift for side textures
+  ctx.restore();
+
+  // draw enemies
+  for(const e of enemies){
+    drawCar(e.img, e.x, e.y, e.width, e.height);
+  }
+
+  // draw player (on top)
+  drawCar(playerImg, player.x, player.y, player.width, player.height);
+
+  // draw HUD
+  ctx.fillStyle = 'rgba(255,255,255,0.9)';
+  ctx.fillRect(8,8,260,80);
+  ctx.strokeStyle = '#222'; ctx.strokeRect(8,8,260,80);
+  ctx.fillStyle = '#222'; ctx.font = '16px sans-serif';
+  ctx.fillText('Shaurya Highway', 18, 30);
+  ctx.font = '14px monospace';
+  ctx.fillText('Speed: ' + Math.round(player.speed * 10) + ' km/h', 18, 52);
+  ctx.fillText('Score: ' + score, 140, 52);
+  ctx.fillText('Time: ' + elapsed.toFixed(2) + 's', 18, 72);
+
+  // draw particles
+  updateParticles(dt * 60);
+
+  // engine sound update
+  if(audioCtx && running){
+    updateEngineSound();
+  }
+
+  requestAnimationFrame(loop);
+}
+
+// spawn enemy helper uses global lane centers
+function spawnEnemy(){
+  // not spawn too close to player
+  // pick lane not occupied at top (simple)
+  const lane = Math.floor(Math.random()*lanes);
+  const x = laneCenter(lane);
+  const y = -60;
+  const colors = ['#58a0ff','#7ee1a8','#ff6b6b','#ffd54f','#9c27b0'];
+  const col = colors[Math.floor(Math.random()*colors.length)];
+  const eimg = enemyImgForColor(col);
+  const speed = clamp(player.speed + 2 + Math.random()*6, 4, player.maxSpeed + 6);
+  enemies.push({lane, x, y, width: player.width*0.95, height: player.height*0.95, img: eimg, speed});
+}
+
+// Restart button handler
+document.getElementById('restart').addEventListener('click', ()=>{
+  // reset
+  enemies.splice(0, enemies.length);
+  particles.splice(0, particles.length);
+  player.lane = Math.floor(lanes/2);
+  player.x = laneCenter(player.lane);
+  player.targetX = player.x;
+  player.speed = 6;
+  player.alive = true;
+  scroll = 0;
+  score = 0;
+  running = true;
+  gameStart = performance.now();
+  lastEnemySpawn = 0;
+  last = performance.now();
+  showMessage = '';
+  requestAnimationFrame(loop);
+});
+
+// fullscreen button
 document.getElementById('playfull').addEventListener('click', ()=>{ if(canvas.requestFullscreen) canvas.requestFullscreen(); });
 
-// On win (for parity with previous logic) - we treat passing two checkpoints then return to start as example
-// For now keep placeholders (you can add real checkpoint positions later)
-startGame();
-showTempMessage('Welcome Shaurya! Drive with arrow keys or touch buttons.', 2200);
-
-// store best time if win later (example helper)
-function onWin(){
-  running = false;
-  const t = elapsed;
-  if(!bestTime || t < bestTime){
-    bestTime = t;
-    localStorage.setItem('shaurya_best_time', bestTime);
-  }
-  showTempMessage(`Congratulations Shaurya! Finished in ${t.toFixed(2)}s`, 4000);
-}
-
-// Small safety: resume audio on first touch/click for mobile autoplay blocked policies
+// resume audio on first user gesture (mobile)
 function resumeAudioOnGesture(){
   if(!audioCtx) return;
   if(audioCtx.state === 'suspended'){
@@ -490,3 +444,8 @@ function resumeAudioOnGesture(){
 }
 window.addEventListener('pointerdown', ()=>{ if(!audioCtx) ensureAudio(); resumeAudioOnGesture(); }, {once:true});
 window.addEventListener('touchstart', ()=>{ if(!audioCtx) ensureAudio(); resumeAudioOnGesture(); }, {once:true});
+
+// Start game
+gameStart = performance.now();
+last = performance.now();
+requestAnimationFrame(loop);
