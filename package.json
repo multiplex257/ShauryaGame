@@ -1,0 +1,22 @@
+{
+  "name": "shaurya-race",
+  "version": "1.0.0",
+  "description": "A small kid-friendly car racing game for Shaurya.",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder"
+  },
+  "author": "multiplex257",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^26.0.0",
+    "electron-builder": "^24.0.0"
+  },
+  "build": {
+    "appId": "com.multiplex257.shauryarace",
+    "files": ["**/*"],
+    "directories": {"buildResources":"assets"}
+  }
+}
