@@ -1,291 +1,492 @@
-// Simple top-down car game for Shaurya with touch controls and simple WebAudio
+// Upgraded game.js - smoother physics, camera, sprite car, skid particles, nicer HUD
+// Drop-in replacement for the previous game.js
+
 const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d');
-const W = canvas.width, H = canvas.height;
+const SCREEN_W = canvas.width, SCREEN_H = canvas.height;
 
-// Car
+// World dimensions (bigger than canvas so camera can move)
+const WORLD_W = 2000, WORLD_H = 1200;
+
+// Car (physics uses velocity vector)
 const car = {
-  x: 120, y: H - 120,
-  angle: -Math.PI/2, // facing up
+  x: 220, y: WORLD_H - 220,
+  angle: -Math.PI / 2,     // facing up
   speed: 0,
-  maxSpeed: 6,
-  accel: 0.18,
-  brake: 0.3,
-  turnSpeed: 0.04,
-  width: 24,
-  height: 44,
-}
+  vx: 0, vy: 0,
+  accelPower: 0.35,
+  brakePower: 0.6,
+  maxSpeed: 10,
+  reverseMax: -4,
+  angularVelocity: 0,
+  steerSpeed: 0.04,        // base steer responsiveness
+  width: 48, height: 96,
+  traction: 0.92,          // lateral damping
+  sprite: null,
+};
 
+// Simple track path (we'll draw a curvy road)
+const track = {
+  // centerline poly points in world coords
+  points: [
+    {x: 200, y: WORLD_H - 200},
+    {x: 300, y: WORLD_H - 600},
+    {x: 500, y: WORLD_H - 820},
+    {x: 900, y: WORLD_H - 860},
+    {x: 1300, y: WORLD_H - 720},
+    {x: 1600, y: WORLD_H - 420},
+    {x: 1700, y: WORLD_H - 180},
+  ],
+  width: 240
+};
+
+// Obstacles and decorations in world coords
+const obstacles = [
+  {x: 520, y: WORLD_H - 700, w: 60, h: 60},
+  {x: 760, y: WORLD_H - 660, w: 60, h: 40},
+  {x: 1180, y: WORLD_H - 620, w: 80, h: 48},
+  {x: 1500, y: WORLD_H - 420, w: 50, h: 50},
+  {x: 700, y: WORLD_H - 360, w: 60, h: 60}
+];
+
+// HUD & game state
 let keys = {};
 let startTime = null;
 let elapsed = 0;
 let running = true;
-let checkpointsPassed = [false, false];
+let checkpointsPassed = [false, false]; // keep as before
+let bestTime = localStorage.getItem('shaurya_best_time') ? parseFloat(localStorage.getItem('shaurya_best_time')) : null;
+let showMessage = '';
+let msgTimer = 0;
 
-// Positions for landmarks customized: approximate places on canvas
-const assetz = {x: 150, y: 100, w: 120, h: 70, name: 'Assetz Marq (Whitefield)'};
-const bishop = {x: 660, y: 180, w: 140, h: 80, name: 'Bishop Cotton Boys (Residency Rd)'};
-const startZone = {x:100,y:H-160,w:140,h:120};
+// Particles for skids/smoke
+const particles = [];
 
-// Simple obstacles (trees/buildings)
-const obstacles = [
-  {x:350,y:300,w:40,h:40},
-  {x:430,y:260,w:50,h:50},
-  {x:520,y:360,w:60,h:30},
-  {x:260,y:200,w:60,h:30},
-]
+// Audio
+let audioCtx = null;
+let engineOsc = null;
+let engineGain = null;
 
-// Landmark images created as inline SVG data URIs (friendly, no external dependencies)
-function svgDataUrl(label, color){
+// Bootsprite: inline SVG car (child-friendly) as data URI
+function createCarSpriteDataURL() {
   const svg = `
-  <svg xmlns='http://www.w3.org/2000/svg' width='320' height='160'>
+  <svg xmlns='http://www.w3.org/2000/svg' width='120' height='240' viewBox='0 0 120 240'>
     <defs>
-      <linearGradient id='g' x1='0' x2='1'>
-        <stop stop-color='${color}' offset='0'/>
-        <stop stop-color='#fff' offset='1'/>
+      <linearGradient id='g1' x1='0' x2='1'>
+        <stop offset='0' stop-color='#ff6b6b'/>
+        <stop offset='1' stop-color='#d32f2f'/>
       </linearGradient>
+      <filter id='s' x='-50%' y='-50%' width='200%' height='200%'>
+        <feDropShadow dx='0' dy='4' stdDeviation='6' flood-color='#000' flood-opacity='0.25'/>
+      </filter>
     </defs>
-    <rect rx='10' ry='10' width='100%' height='100%' fill='url(#g)' stroke='#333' stroke-width='2'/>
-    <text x='50%' y='50%' dominant-baseline='middle' text-anchor='middle' font-family='Arial' font-size='18' fill='#111'>${label}</text>
+    <g filter='url(#s)'>
+      <rect x='10' y='40' rx='12' ry='12' width='100' height='160' fill='url(#g1)' stroke='#2b2b2b' stroke-width='3'/>
+      <rect x='22' y='56' width='76' height='56' rx='6' fill='#fff' opacity='0.9'/>
+      <rect x='22' y='120' width='22' height='24' rx='4' fill='#222'/>
+      <rect x='76' y='120' width='22' height='24' rx='4' fill='#222'/>
+      <circle cx='30' cy='200' r='10' fill='#111'/>
+      <circle cx='90' cy='200' r='10' fill='#111'/>
+    </g>
   </svg>`;
   return 'data:image/svg+xml;utf8,' + encodeURIComponent(svg);
 }
 
-const assetzImg = new Image(); assetzImg.src = svgDataUrl(assetz.name, '#ffd974');
-const bishopImg = new Image(); bishopImg.src = svgDataUrl(bishop.name, '#ffd1dd');
+// Load sprite image
+(function loadSprite(){
+  const img = new Image();
+  img.src = createCarSpriteDataURL();
+  img.onload = () => { car.sprite = img; };
+})();
 
-function rectIntersects(a,b){
-  return !(a.x+a.w < b.x || a.x > b.x+b.w || a.y+a.h < b.y || a.y > b.y+b.h);
-}
+// Utility
+function clamp(v,a,b){ return Math.max(a, Math.min(b, v)); }
+function lerp(a,b,t){ return a + (b-a)*t; }
 
-function carRect(c){
-  return {x: c.x - c.width/2, y: c.y - c.height/2, w: c.width, h: c.height};
-}
-
-function pointInRect(px,py,r){
-  return px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h;
-}
-
-// WebAudio engine + sfx (simple synthesized sounds)
-let audioCtx = null;
-let engineGain = null;
-let engineOsc = null;
+// Simple audio setup (engine hum)
 function ensureAudio(){
   if(audioCtx) return;
   audioCtx = new (window.AudioContext || window.webkitAudioContext)();
   engineOsc = audioCtx.createOscillator();
   engineOsc.type = 'sawtooth';
   engineGain = audioCtx.createGain();
-  engineGain.gain.value = 0; // start muted
+  engineGain.gain.value = 0;
   engineOsc.connect(engineGain);
   engineGain.connect(audioCtx.destination);
-  engineOsc.frequency.value = 120; // base
+  engineOsc.frequency.value = 80;
   engineOsc.start();
 }
 
-function updateEngineSound(){
-  if(!audioCtx) return;
-  const speed = Math.abs(car.speed);
-  // frequency between 90 and 700
-  const freq = 90 + (speed / car.maxSpeed) * 600;
-  engineOsc.frequency.setTargetAtTime(freq, audioCtx.currentTime, 0.05);
-  const targetGain = Math.min(0.25, 0.02 + (speed / car.maxSpeed) * 0.22);
-  engineGain.gain.setTargetAtTime(targetGain, audioCtx.currentTime, 0.05);
+// Particle helper
+function spawnParticle(x,y,vx,vy,life, size, color){
+  particles.push({x,y,vx,vy,life,age:0,size,color});
 }
 
-function playCrash(){
-  if(!audioCtx) ensureAudio();
-  const t = audioCtx.currentTime;
-  const o = audioCtx.createOscillator();
-  const g = audioCtx.createGain();
-  o.type='square'; o.frequency.setValueAtTime(120, t);
-  g.gain.setValueAtTime(0.3, t);
-  o.connect(g); g.connect(audioCtx.destination);
-  o.start();
-  o.frequency.exponentialRampToValueAtTime(30, t+0.4);
-  g.gain.exponentialRampToValueAtTime(0.0001, t+0.5);
-  setTimeout(()=>{ o.stop(); o.disconnect(); g.disconnect(); }, 800);
+// Input
+window.addEventListener('keydown', e => { keys[e.key] = true; if(!audioCtx) ensureAudio(); });
+window.addEventListener('keyup', e => { keys[e.key] = false; });
+
+// Touch buttons: reuse existing touch-controls buttons (they set data-key)
+document.getElementById('touchControls')?.addEventListener('touchstart', e => { e.preventDefault(); for(const t of e.changedTouches){ const el = document.elementFromPoint(t.clientX, t.clientY); if(el && el.dataset && el.dataset.key) keys[el.dataset.key] = true; if(!audioCtx) ensureAudio(); } }, {passive:false});
+document.getElementById('touchControls')?.addEventListener('touchend', e => { e.preventDefault(); for(const t of e.changedTouches){ const el = document.elementFromPoint(t.clientX, t.clientY); if(el && el.dataset && el.dataset.key) keys[el.dataset.key] = false; } }, {passive:false});
+document.getElementById('touchControls')?.addEventListener('mousedown', e => { const el = e.target.closest('.tc-btn'); if(el && el.dataset && el.dataset.key) keys[el.dataset.key] = true; if(!audioCtx) ensureAudio(); });
+document.getElementById('touchControls')?.addEventListener('mouseup', e => { const el = e.target.closest('.tc-btn'); if(el && el.dataset && el.dataset.key) keys[el.dataset.key] = false; });
+
+// Basic collision util (AABB)
+function aabbOverlap(a,b){
+  return !(a.x + a.w < b.x || a.x > b.x + b.w || a.y + a.h < b.y || a.y > b.y + b.h);
 }
 
-function playWin(){
-  if(!audioCtx) ensureAudio();
-  const t = audioCtx.currentTime;
-  const freqs = [440, 660, 880];
-  freqs.forEach((f,i)=>{
-    const o = audioCtx.createOscillator(); const g = audioCtx.createGain();
-    o.type='sine'; o.frequency.setValueAtTime(f, t + i*0.12);
-    g.gain.setValueAtTime(0.18, t + i*0.12);
-    o.connect(g); g.connect(audioCtx.destination);
-    o.start(t + i*0.12);
-    o.stop(t + i*0.12 + 0.28);
-  });
+// Draw world to an offscreen transform: camera follows car
+function worldToScreen(wx, wy, cam){ return { x: wx - cam.x + SCREEN_W/2, y: wy - cam.y + SCREEN_H/2 }; }
+
+// Road drawing (draw wide textured lane with center dashed line)
+function drawRoad(cam){
+  // draw a large faded background for road area
+  ctx.save();
+  // draw the road shape by creating a thick polyline path around centerline
+  ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+
+  // Draw road asphalt (thick stroke along centerline)
+  ctx.strokeStyle = '#2f3b4a';
+  ctx.lineWidth = track.width;
+  ctx.beginPath();
+  for(let i=0;i<track.points.length;i++){
+    const p = track.points[i];
+    const s = worldToScreen(p.x, p.y, cam);
+    if(i===0) ctx.moveTo(s.x, s.y); else ctx.lineTo(s.x, s.y);
+  }
+  ctx.stroke();
+
+  // road edge highlight
+  ctx.strokeStyle = '#4a5768';
+  ctx.lineWidth = track.width - 18;
+  ctx.globalAlpha = 0.9;
+  ctx.beginPath();
+  for(let i=0;i<track.points.length;i++){
+    const p = track.points[i];
+    const s = worldToScreen(p.x, p.y, cam);
+    if(i===0) ctx.moveTo(s.x, s.y); else ctx.lineTo(s.x, s.y);
+  }
+  ctx.stroke();
+  ctx.globalAlpha = 1;
+
+  // center dashed line
+  ctx.strokeStyle = '#ffd';
+  ctx.lineWidth = 4;
+  ctx.setLineDash([18, 16]);
+  ctx.beginPath();
+  for(let i=0;i<track.points.length;i++){
+    const p = track.points[i];
+    const s = worldToScreen(p.x, p.y, cam);
+    if(i===0) ctx.moveTo(s.x, s.y); else ctx.lineTo(s.x, s.y);
+  }
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  ctx.restore();
 }
 
-// Controls
-window.addEventListener('keydown', e=>{ keys[e.key]=true; if(!audioCtx) ensureAudio(); e.preventDefault(); });
-window.addEventListener('keyup', e=>{ keys[e.key]=false; e.preventDefault(); });
-
-// Touch control wiring
-const tc = document.getElementById('touchControls');
-if(tc){
-  tc.addEventListener('touchstart', touchHandler, {passive:false});
-  tc.addEventListener('touchend', touchHandler, {passive:false});
-  tc.addEventListener('mousedown', mouseHandler);
-  tc.addEventListener('mouseup', mouseHandler);
-}
-
-function touchHandler(e){
-  e.preventDefault();
-  for(const t of e.changedTouches){
-    const el = document.elementFromPoint(t.clientX, t.clientY);
-    if(!el) continue;
-    const key = el.dataset && el.dataset.key;
-    if(!key) continue;
-    if(e.type === 'touchstart') { keys[key]=true; if(!audioCtx) ensureAudio(); }
-    if(e.type === 'touchend') { keys[key]=false; }
+// Draw obstacles
+function drawObstacles(cam){
+  for(const o of obstacles){
+    const s = worldToScreen(o.x, o.y, cam);
+    ctx.fillStyle = '#6b8';
+    ctx.fillRect(s.x - o.w/2, s.y - o.h/2, o.w, o.h);
+    ctx.strokeStyle = '#374';
+    ctx.strokeRect(s.x - o.w/2, s.y - o.h/2, o.w, o.h);
   }
 }
-function mouseHandler(e){
-  const el = e.target.closest('.tc-btn');
-  if(!el) return;
-  const key = el.dataset && el.dataset.key;
-  if(e.type === 'mousedown') { keys[key]=true; if(!audioCtx) ensureAudio(); }
-  if(e.type === 'mouseup') { keys[key]=false; }
+
+// HUD: speedometer and time
+function drawHUD(){
+  // speed
+  ctx.save();
+  ctx.resetTransform();
+  ctx.fillStyle = 'rgba(255,255,255,0.9)';
+  ctx.strokeStyle = '#035';
+  ctx.lineWidth = 2;
+  ctx.fillRect(12, 12, 220, 72);
+  ctx.strokeRect(12,12,220,72);
+  ctx.fillStyle = '#033';
+  ctx.font = '16px sans-serif';
+  ctx.fillText('Shaurya Race', 20, 34);
+
+  ctx.font = '14px monospace';
+  ctx.fillText('Speed: ' + Math.round(Math.hypot(car.vx, car.vy) * 10) + ' km/h', 20, 58);
+
+  ctx.fillText('Time: ' + elapsed.toFixed(2) + 's', 120, 58);
+
+  if(bestTime) ctx.fillText('Best: ' + bestTime.toFixed(2) + 's', 20, 78);
+  ctx.restore();
+
+  // message
+  if(msgTimer > 0){
+    ctx.save();
+    ctx.resetTransform();
+    ctx.fillStyle = 'rgba(4,80,120,0.92)';
+    ctx.fillRect(SCREEN_W/2 - 200, 20, 400, 36);
+    ctx.fillStyle = '#fff';
+    ctx.font = '16px sans-serif';
+    ctx.fillText(showMessage, SCREEN_W/2 - ctx.measureText(showMessage).width/2, 44);
+    ctx.restore();
+  }
 }
 
+// Particle update/draw
+function updateParticles(dt, cam){
+  for(let i = particles.length-1; i >= 0; i--){
+    const p = particles[i];
+    p.vx *= 0.995; p.vy *= 0.995;
+    p.x += p.vx * dt * 60;
+    p.y += p.vy * dt * 60;
+    p.age += dt;
+    if(p.age > p.life) particles.splice(i,1);
+  }
+
+  // draw
+  for(const p of particles){
+    const s = worldToScreen(p.x, p.y, cam);
+    const alpha = 1 - (p.age / p.life);
+    ctx.save();
+    ctx.globalAlpha = alpha * 0.9;
+    ctx.fillStyle = p.color;
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, p.size * (1 - p.age/p.life), 0, Math.PI*2);
+    ctx.fill();
+    ctx.restore();
+  }
+}
+
+// Camera: smooth follow
+const camera = { x: car.x, y: car.y };
+function updateCamera(dt){
+  camera.x = lerp(camera.x, car.x, 0.06);
+  camera.y = lerp(camera.y, car.y, 0.06);
+}
+
+// Engine sound update
+function updateEngineSound(){
+  if(!audioCtx) return;
+  const speed = Math.hypot(car.vx, car.vy);
+  const freq = 80 + (speed / car.maxSpeed) * 700;
+  engineOsc.frequency.setTargetAtTime(freq, audioCtx.currentTime, 0.08);
+  const gainTarget = Math.min(0.24, 0.02 + (speed / car.maxSpeed) * 0.2);
+  engineGain.gain.setTargetAtTime(gainTarget, audioCtx.currentTime, 0.08);
+}
+
+// Game update physics
 function update(dt){
   if(!running) return;
-  // acceleration
-  if(keys['ArrowUp'] || keys['w']){ car.speed += car.accel; }
-  if(keys['ArrowDown'] || keys['s']){ car.speed -= car.brake; }
-  // clamp
-  if(car.speed > car.maxSpeed) car.speed = car.maxSpeed;
-  if(car.speed < -car.maxSpeed/2) car.speed = -car.maxSpeed/2;
-  // turning
-  if(keys['ArrowLeft'] || keys['a']) car.angle -= car.turnSpeed * (car.speed!==0? Math.sign(car.speed):1);
-  if(keys['ArrowRight'] || keys['d']) car.angle += car.turnSpeed * (car.speed!==0? Math.sign(car.speed):1);
-  // friction
-  car.speed *= 0.99;
-  // move
-  car.x += Math.cos(car.angle) * car.speed * dt;
-  car.y += Math.sin(car.angle) * car.speed * dt;
+  // Inputs
+  const accelInput = (keys['ArrowUp'] || keys['w']) ? 1 : 0;
+  const brakeInput = (keys['ArrowDown'] || keys['s']) ? 1 : 0;
+  const left = (keys['ArrowLeft'] || keys['a']) ? 1 : 0;
+  const right = (keys['ArrowRight'] || keys['d']) ? 1 : 0;
 
-  // keep inside canvas
-  if(car.x < 0) car.x = 0; if(car.x > W) car.x = W;
-  if(car.y < 0) car.y = 0; if(car.y > H) car.y = H;
+  // Forward acceleration (based on car angle)
+  const forwardAx = Math.cos(car.angle) * (accelInput * car.accelPower - brakeInput * car.brakePower);
+  const forwardAy = Math.sin(car.angle) * (accelInput * car.accelPower - brakeInput * car.brakePower);
 
-  // collisions with obstacles
-  for(let o of obstacles){
-    if(rectIntersects(carRect(car), o)){
-      // simple collision response: bounce back and reduce speed
-      car.x -= Math.cos(car.angle) * car.speed * dt * 3;
-      car.y -= Math.sin(car.angle) * car.speed * dt * 3;
-      car.speed *= -0.3;
-      showTempMessage('Ouch! Slow down, Shaurya');
-      playCrash();
+  // Add acceleration to velocity
+  car.vx += forwardAx * dt * 60;
+  car.vy += forwardAy * dt * 60;
+
+  // Speed clamp
+  const localSpeed = Math.hypot(car.vx, car.vy);
+  if(localSpeed > car.maxSpeed){
+    const scale = car.maxSpeed / localSpeed;
+    car.vx *= scale; car.vy *= scale;
+  }
+  if(localSpeed < Math.abs(car.reverseMax) && accelInput === 0 && brakeInput === 0){
+    // small friction
+    car.vx *= 0.995; car.vy *= 0.995;
+  }
+
+  // Steering: stronger when moving forward, less when slow
+  const speedFactor = clamp(localSpeed / car.maxSpeed, 0, 1);
+  const steer = (right - left) * car.steerSpeed * (0.4 + 1.2 * speedFactor);
+  car.angle += steer * dt * 60;
+
+  // Traction: reduce lateral velocity relative to car heading
+  // compute car heading unit vector
+  const hx = Math.cos(car.angle), hy = Math.sin(car.angle);
+  // forward speed component
+  const forward = car.vx * hx + car.vy * hy;
+  // lateral speed component
+  const lateral = -car.vx * hy + car.vy * hx;
+  // damp lateral by traction
+  const newLateral = lateral * car.traction;
+  // reconstruct vx, vy
+  car.vx = forward * hx - newLateral * hy;
+  car.vy = forward * hy + newLateral * hx;
+
+  // Update position
+  car.x += car.vx * dt * 60;
+  car.y += car.vy * dt * 60;
+
+  // Boundaries: clamp inside world with bounce
+  if(car.x < 30){ car.x = 30; car.vx *= -0.4; spawnParticle(car.x+10, car.y, -car.vx*0.2, 0, 0.6, 8, 'rgba(0,0,0,0.5)'); }
+  if(car.x > WORLD_W - 30){ car.x = WORLD_W - 30; car.vx *= -0.4; spawnParticle(car.x-10, car.y, -car.vx*0.2, 0, 0.6, 8, 'rgba(0,0,0,0.5)'); }
+  if(car.y < 30){ car.y = 30; car.vy *= -0.4; spawnParticle(car.x, car.y+10, 0, -car.vy*0.2, 0.6, 8, 'rgba(0,0,0,0.5)'); }
+  if(car.y > WORLD_H - 30){ car.y = WORLD_H - 30; car.vy *= -0.4; spawnParticle(car.x, car.y-10, 0, -car.vy*0.2, 0.6, 8, 'rgba(0,0,0,0.5)'); }
+
+  // Collisions with obstacles
+  for(const o of obstacles){
+    const rect = { x: o.x - o.w/2, y: o.y - o.h/2, w: o.w, h: o.h };
+    const carBox = { x: car.x - car.width/3, y: car.y - car.height/3, w: car.width/1.5, h: car.height/1.5 };
+    if(aabbOverlap(rect, carBox)){
+      // simple pushback: reflect velocity and spawn particles
+      car.vx *= -0.45; car.vy *= -0.45;
+      car.x += car.vx * 6; car.y += car.vy * 6;
+      spawnParticle(car.x, car.y, -car.vx*0.05, -car.vy*0.05, 0.8, 12, 'rgba(80,80,80,0.8)');
+      showTempMessage('Ouch! Be careful.');
     }
   }
 
-  // Checkpoints detection: must pass assetz and bishop in any order
-  if(pointInRect(car.x,car.y, assetz) && !checkpointsPassed[0]){ checkpointsPassed[0]=true; showTempMessage('You reached Assetz Marq!'); }
-  if(pointInRect(car.x,car.y, bishop) && !checkpointsPassed[1]){ checkpointsPassed[1]=true; showTempMessage('You reached Bishop Cotton Boys!'); }
-
-  // Win condition: if both passed and returned to start zone
-  if(checkpointsPassed[0] && checkpointsPassed[1] && pointInRect(car.x,car.y, startZone)){
-    running = false;
-    elapsed = (performance.now()-startTime)/1000;
-    document.getElementById('message').textContent = `Congratulations Shaurya! You finished in ${elapsed.toFixed(2)}s!`;
-    showWinScreen();
-    playWin();
+  // Skid particles when turning hard or braking
+  if(Math.abs(steer) > 0.03 && localSpeed > 3){
+    // left or right tyres smoke
+    const sign = Math.sign(steer);
+    // world coords for tyres (slightly behind the car center)
+    const tyreOffsetX = car.x - hx * 10;
+    const tyreOffsetY = car.y - hy * 10;
+    for(let i=0;i<2;i++){
+      const side = (i===0) ? 14 : -14;
+      const tx = tyreOffsetX + (-hy*side);
+      const ty = tyreOffsetY + (hx*side);
+      spawnParticle(tx, ty, -car.vx*0.02 + (Math.random()-0.5)*0.3, -car.vy*0.02 + (Math.random()-0.5)*0.3, 0.8, 6 + Math.random()*4, 'rgba(30,30,30,0.7)');
+    }
+  }
+  if(brakeInput && Math.hypot(car.vx,car.vy) > 4){
+    // brake smoke
+    spawnParticle(car.x - hx*18, car.y - hy*18, -car.vx*0.05 + (Math.random()-0.5)*0.5, -car.vy*0.05 + (Math.random()-0.5)*0.5, 0.8, 8, 'rgba(50,50,60,0.9)');
+    spawnParticle(car.x + hy*18, car.y - hx*18, -car.vx*0.05 + (Math.random()-0.5)*0.5, -car.vy*0.05 + (Math.random()-0.5)*0.5, 0.8, 6, 'rgba(50,50,60,0.9)');
   }
 
-  updateEngineSound();
+  // update timers and audio
+  elapsed = (performance.now() - startTime) / 1000;
+  if(audioCtx) updateEngineSound();
 }
 
-let tempMessage = null;
-let tempMessageTimer = 0;
-function showTempMessage(t){ tempMessage = t; tempMessageTimer = 1600; document.getElementById('message').textContent = t; }
-
-function showWinScreen(){
-  document.getElementById('message').textContent += ' Great driving!';
+// Simple message display
+function showTempMessage(t, time = 1600){
+  showMessage = t; msgTimer = time / 16;
 }
 
-function draw(){
-  // background
-  ctx.clearRect(0,0,W,H);
-  // simple road network: draw a faint track
-  ctx.fillStyle = '#dcecff';
-  ctx.fillRect(0,0,W,H);
+// Draw everything
+function draw(cam){
+  // Clear background (sky)
+  ctx.save();
+  ctx.fillStyle = '#bfe7ff';
+  ctx.fillRect(0,0,SCREEN_W,SCREEN_H);
 
-  // draw a road path (curvy) - decorative
-  ctx.strokeStyle = '#a6d1ff'; ctx.lineWidth = 60; ctx.lineCap = 'round';
-  ctx.beginPath(); ctx.moveTo(120,H-120); ctx.lineTo(200,420); ctx.lineTo(340,360); ctx.lineTo(480,380); ctx.lineTo(620,300); ctx.lineTo(700,220); ctx.stroke();
+  // subtle ground gradient
+  ctx.fillStyle = 'linear-gradient(#dff3ff,#cfe8ff)';
 
-  // start zone
-  ctx.fillStyle = 'rgba(0,180,100,0.12)'; ctx.fillRect(startZone.x, startZone.y, startZone.w, startZone.h);
-  ctx.strokeStyle = '#007a3d'; ctx.strokeRect(startZone.x, startZone.y, startZone.w, startZone.h);
-  ctx.fillStyle = '#006'; ctx.font = '14px sans-serif'; ctx.fillText('Start / Finish', startZone.x+10, startZone.y+18);
+  // draw road and world objects in world coords transformed by camera
+  drawRoad(cam);
+  drawObstacles(cam);
 
-  // landmarks (draw images if loaded)
-  drawLandmarkWithImage(assetz, assetzImg);
-  drawLandmarkWithImage(bishop, bishopImg);
+  // draw track-side grass/decor
+  // (decorate sides with green)
+  ctx.globalCompositeOperation = 'destination-over';
 
-  // obstacles (trees/buildings)
-  for(let o of obstacles){ ctx.fillStyle = '#6b8'; ctx.fillRect(o.x,o.y,o.w,o.h); ctx.strokeStyle='#375'; ctx.strokeRect(o.x,o.y,o.w,o.h); }
+  // draw particles (skid smoke) under car for depth
+  updateParticles(1/60, cam);
 
-  // car
-  ctx.save(); ctx.translate(car.x,car.y); ctx.rotate(car.angle);
-  // car body
-  ctx.fillStyle='#e53935'; ctx.fillRect(-car.width/2, -car.height/2, car.width, car.height);
-  // windows
-  ctx.fillStyle='#fff'; ctx.fillRect(-car.width/4, -car.height/2+6, car.width/2, car.height/3);
-  // wheels
-  ctx.fillStyle='#222'; ctx.fillRect(-car.width/2-4, -car.height/2+6,4,12); ctx.fillRect(car.width/2, -car.height/2+6,4,12);
-  ctx.fillRect(-car.width/2-4, car.height/2-18,4,12); ctx.fillRect(car.width/2, car.height/2-18,4,12);
+  // draw car (sprite) at center of camera screen relative to car world coords
+  // compute car screen position
+  const carScr = worldToScreen(car.x, car.y, cam);
+  ctx.save();
+  ctx.translate(carScr.x, carScr.y);
+  ctx.rotate(car.angle + Math.PI/2); // sprite default faces up -> adjust if needed
+
+  // draw shadow
+  ctx.fillStyle = 'rgba(0,0,0,0.18)';
+  ctx.beginPath();
+  ctx.ellipse(0, car.height*0.24, car.width*0.5, car.width*0.2, 0, 0, Math.PI*2);
+  ctx.fill();
+
+  // draw sprite (if loaded) otherwise draw fallback car
+  if(car.sprite){
+    const sx = -car.width/2, sy = -car.height/2;
+    ctx.drawImage(car.sprite, sx, sy, car.width, car.height);
+  } else {
+    ctx.fillStyle = '#e53935';
+    ctx.fillRect(-car.width/2, -car.height/2, car.width, car.height);
+  }
+
   ctx.restore();
 
-  // HUD updates
-  document.getElementById('speed').textContent = 'Speed: ' + Math.abs(car.speed).toFixed(2);
-  document.getElementById('checkpoints').textContent = `Checkpoints: ${ (checkpointsPassed[0]?1:0) + (checkpointsPassed[1]?1:0) } / 2`;
+  // draw particles above car
+  updateParticles(1/60, cam);
 
-  // temp message timer
-  if(tempMessageTimer>0){ tempMessageTimer -= 16; if(tempMessageTimer<=0){ tempMessage=null; document.getElementById('message').textContent = 'Keep going!'; } }
+  // HUD
+  drawHUD();
+
+  ctx.restore();
 }
 
-function drawLandmarkWithImage(l, img){
-  if(img && img.complete){
-    // scale to fit box
-    ctx.drawImage(img, l.x, l.y, l.w, l.h);
-    // border
-    ctx.strokeStyle = '#333'; ctx.lineWidth = 2; ctx.strokeRect(l.x,l.y,l.w,l.h);
-  } else {
-    // fallback box
-    ctx.fillStyle = '#ffd'; ctx.fillRect(l.x,l.y,l.w,l.h);
-    ctx.strokeStyle = '#333'; ctx.strokeRect(l.x,l.y,l.w,l.h);
-    ctx.fillStyle = '#111'; ctx.font='14px sans-serif'; ctx.fillText(l.name, l.x+8, l.y+18);
-  }
-}
-
-// Animation loop
+// Game loop
 let last = performance.now();
 function loop(now){
-  const dt = Math.min(1.5, (now - last)/16); // relative dt
+  const dt = Math.min(0.05, (now - last)/1000);
   last = now;
-  if(startTime===null) startTime = performance.now();
-  if(running) elapsed = (performance.now()-startTime)/1000;
+  if(startTime === null) startTime = performance.now();
+
   update(dt);
-  draw();
-  document.getElementById('time').textContent = 'Time: ' + elapsed.toFixed(2) + 's';
+  updateCamera(dt);
+
+  // clear canvas
+  ctx.clearRect(0,0,SCREEN_W,SCREEN_H);
+  draw(camera);
+
+  // messages timer
+  if(msgTimer > 0){ msgTimer--; } else { showMessage = ''; }
+
   requestAnimationFrame(loop);
 }
-requestAnimationFrame(loop);
+
+// Start
+function startGame(){
+  startTime = performance.now();
+  running = true;
+  last = performance.now();
+  requestAnimationFrame(loop);
+}
 
 // Buttons
 document.getElementById('restart').addEventListener('click', ()=>{
-  car.x = 120; car.y = H-120; car.angle = -Math.PI/2; car.speed = 0; startTime = performance.now(); elapsed = 0; running = true; checkpointsPassed = [false,false]; document.getElementById('message').textContent='Restarted! Drive safely, Shaurya';
+  car.x = 220; car.y = WORLD_H - 220; car.vx = car.vy = 0; car.angle = -Math.PI/2;
+  startTime = performance.now(); elapsed = 0; running = true; showTempMessage('Restarted! Drive safely, Shaurya', 1400);
 });
-
 document.getElementById('playfull').addEventListener('click', ()=>{ if(canvas.requestFullscreen) canvas.requestFullscreen(); });
 
-// Small accessibility: show instructions on load
-showTempMessage('Welcome Shaurya! Use arrow keys or on-screen buttons to drive.');
+// On win (for parity with previous logic) - we treat passing two checkpoints then return to start as example
+// For now keep placeholders (you can add real checkpoint positions later)
+startGame();
+showTempMessage('Welcome Shaurya! Drive with arrow keys or touch buttons.', 2200);
+
+// store best time if win later (example helper)
+function onWin(){
+  running = false;
+  const t = elapsed;
+  if(!bestTime || t < bestTime){
+    bestTime = t;
+    localStorage.setItem('shaurya_best_time', bestTime);
+  }
+  showTempMessage(`Congratulations Shaurya! Finished in ${t.toFixed(2)}s`, 4000);
+}
+
+// Small safety: resume audio on first touch/click for mobile autoplay blocked policies
+function resumeAudioOnGesture(){
+  if(!audioCtx) return;
+  if(audioCtx.state === 'suspended'){
+    const resume = () => { audioCtx.resume().catch(()=>{}); window.removeEventListener('pointerdown', resume); window.removeEventListener('touchstart', resume); };
+    window.addEventListener('pointerdown', resume);
+    window.addEventListener('touchstart', resume);
+  }
+}
+window.addEventListener('pointerdown', ()=>{ if(!audioCtx) ensureAudio(); resumeAudioOnGesture(); }, {once:true});
+window.addEventListener('touchstart', ()=>{ if(!audioCtx) ensureAudio(); resumeAudioOnGesture(); }, {once:true});
