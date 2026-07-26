@@ -1,22 +1,43 @@
-<div class="hud">
-  <div id="speed">Speed: 0</div>
-  <div id="time">Time: 0.00s</div>
-  <div id="checkpoints">Checkpoints: 0 / 2</div>
-  <div id="message">Use arrow keys to drive. Reach both landmarks, then return to start to win!</div>
-</div>
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Shaurya's Race — Assetz Marq to Bishop Cotton</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="container">
+    <h1>Shaurya's Racing Adventure</h1>
+    <p class="subtitle">Drive from Assetz Marq (Whitefield) to Bishop Cotton Boys (Residency Road)</p>
 
-<div class="controls">
-  <button id="restart">Restart</button>
-  <button id="playfull">Play Fullscreen</button>
-</div>
+    <!-- Game canvas -->
+    <canvas id="game" width="900" height="600" aria-label="Shaurya car racing game"></canvas>
 
-<!-- On-screen touch controls for tablets/phones -->
-<div class="touch-controls" id="touchControls" aria-hidden="false">
-  <button class="tc-btn tc-up" data-key="ArrowUp" aria-label="up">▲</button>
-  <button class="tc-btn tc-left" data-key="ArrowLeft" aria-label="left">◀</button>
-  <button class="tc-btn tc-down" data-key="ArrowDown" aria-label="down">▼</button>
-  <button class="tc-btn tc-right" data-key="ArrowRight" aria-label="right">▶</button>
-</div>
+    <div class="hud">
+      <div id="speed">Speed: 0</div>
+      <div id="time">Time: 0.00s</div>
+      <div id="checkpoints">Checkpoints: 0 / 2</div>
+      <div id="message">Use arrow keys to drive. Reach both landmarks, then return to start to win!</div>
+    </div>
 
-<footer>Made for Shaurya — Bangalore (Assetz Marq → Bishop Cotton Boys)</footer>
-</div> <script src="game.js"></script> </body> </html>
+    <div class="controls">
+      <button id="restart">Restart</button>
+      <button id="playfull">Play Fullscreen</button>
+    </div>
+
+    <!-- On-screen touch controls for tablets/phones -->
+    <div class="touch-controls" id="touchControls" aria-hidden="false">
+      <button class="tc-btn tc-up" data-key="ArrowUp" aria-label="up">▲</button>
+      <button class="tc-btn tc-left" data-key="ArrowLeft" aria-label="left">◀</button>
+      <button class="tc-btn tc-down" data-key="ArrowDown" aria-label="down">▼</button>
+      <button class="tc-btn tc-right" data-key="ArrowRight" aria-label="right">▶</button>
+    </div>
+
+    <footer>Made for Shaurya — Bangalore (Assetz Marq → Bishop Cotton Boys)</footer>
+  </div>
+
+  <!-- Load game script after DOM parsed -->
+  <script src="game.js" defer></script>
+</body>
+</html>
