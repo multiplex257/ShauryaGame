@@ -11,18 +11,31 @@
     <h1>Shaurya's Racing Adventure</h1>
     <p class="subtitle">Drive from Assetz Marq (Whitefield) to Bishop Cotton Boys (Residency Road) — have fun, Shaurya!</p>
     <canvas id="game" width="900" height="600" aria-label="Shaurya car racing game"></canvas>
+
     <div class="hud">
       <div id="speed">Speed: 0</div>
       <div id="time">Time: 0.00s</div>
       <div id="checkpoints">Checkpoints: 0 / 2</div>
       <div id="message">Use arrow keys to drive. Reach both landmarks, then return to start to win!</div>
     </div>
+
     <div class="controls">
       <button id="restart">Restart</button>
       <button id="playfull">Play Fullscreen</button>
     </div>
+
+    <!-- On-screen touch controls for tablets/phones -->
+    <div class="touch-controls" id="touchControls" aria-hidden="false">
+      <button class="tc-btn tc-up" data-key="ArrowUp" aria-label="up">▲</button>
+      <button class="tc-btn tc-left" data-key="ArrowLeft" aria-label="left">◀</button>
+      <button class="tc-btn tc-down" data-key="ArrowDown" aria-label="down">▼</button>
+      <button class="tc-btn tc-right" data-key="ArrowRight" aria-label="right">▶</button>
+    </div>
+
     <footer>Made for Shaurya — Bangalore (Assetz Marq → Bishop Cotton Boys)</footer>
   </div>
   <script src="game.js"></script>
+  </body>
+</html>
 </body>
 </html>
